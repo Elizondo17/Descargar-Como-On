@@ -49,7 +49,10 @@ jobs:
 
       - name: Compilar APK Oficial (ComoOn-PSA.apk)
         run: |
-          ./gradlew :app:assembleDebug --no-daemon
+          if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/cmdline-tools/latest/bin" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          fi
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk ComoOn-PSA.apk
           SHA256=$(sha256sum ComoOn-PSA.apk | awk '{print $1}')
           BYTES=$(stat -c "%s" ComoOn-PSA.apk)

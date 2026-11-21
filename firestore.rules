@@ -1,0 +1,337 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null &&
+             request.auth.token.email != null &&
+             request.auth.token.email_verified == true;
+    }
+
+    function authEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function isBootstrapAdmin() {
+      return isSignedIn() && authEmail() == 'leonelizondo16@gmail.com';
+    }
+
+    function isValidEmailKey(emailKey) {
+      return emailKey is string &&
+             emailKey.size() >= 5 &&
+             emailKey.size() <= 120 &&
+             emailKey.matches('^[a-z0-9._%+\\-]+@[a-z0-9.\\-]+\\.[a-z]{2,}$');
+    }
+
+    function isValidConfigId(configId) {
+      return configId is string &&
+             configId in ['role_matrix', 'alerts_feed', 'knowledge_feed', 'psa_pricing_sync', 'app_version'] &&
+             configId.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSuperuser() {
+      return isBootstrapAdmin() ||
+             (isSignedIn() &&
+              exists(/databases/$(database)/documents/authorized_users/$(authEmail())) &&
+              get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.role == 'SUPERUSER' &&
+              get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.isBlocked == false);
+    }
+
+    function isActiveAuthorizedMember() {
+      return isSuperuser() ||
+             (isSignedIn() &&
+              exists(/databases/$(database)/documents/authorized_users/$(authEmail())) &&
+              get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.isBlocked == false &&
+              get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.expiresAt > request.time &&
+              get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.boundDeviceIds.size() > 0);
+    }
+
+    function isValidAuthorizedUser(data, emailKey) {
+      return data.keys().hasAll([
+               'id', 'email', 'username', 'role', 'daysGranted',
+               'validFrom', 'expiresAt', 'isBlocked', 'canAccessLegacyModules',
+               'notes', 'maxDevices', 'boundDeviceIds', 'boundDeviceLabels',
+               'ownerUid', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'email', 'username', 'role', 'daysGranted',
+               'validFrom', 'expiresAt', 'isBlocked', 'canAccessLegacyModules',
+               'notes', 'maxDevices', 'boundDeviceIds', 'boundDeviceLabels',
+               'ownerUid', 'createdAt', 'updatedAt', 'lastTamperAlertAtMs'
+             ]) &&
+             data.id is string && data.id.size() >= 3 && data.id.size() <= 80 &&
+             data.email is string && data.email == emailKey &&
+             data.username is string && data.username.size() >= 2 && data.username.size() <= 80 &&
+             data.role in ['SUPERUSER', 'OPERATOR'] &&
+             data.daysGranted is int && data.daysGranted >= 0 && data.daysGranted <= 3650 &&
+             data.validFrom is timestamp && data.validFrom <= request.time &&
+             data.expiresAt is timestamp &&
+             data.isBlocked is bool &&
+             data.canAccessLegacyModules is bool &&
+             data.notes is string && data.notes.size() <= 300 &&
+             data.maxDevices is int && data.maxDevices >= 1 && data.maxDevices <= 5 &&
+             data.boundDeviceIds is list &&
+             data.boundDeviceIds.size() <= 5 &&
+             (data.boundDeviceIds.size() == 0 || data.boundDeviceIds[0] is string) &&
+             data.boundDeviceLabels is list &&
+             data.boundDeviceLabels.size() <= 5 &&
+             data.boundDeviceLabels.size() == data.boundDeviceIds.size() &&
+             (data.boundDeviceLabels.size() == 0 || data.boundDeviceLabels[0] is string) &&
+             data.ownerUid is string && data.ownerUid.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time &&
+             (!('lastTamperAlertAtMs' in data) || (data.lastTamperAlertAtMs is int && data.lastTamperAlertAtMs >= 0));
+    }
+
+    function isValidTeamConfig(data, configId) {
+      return data.keys().hasAll(['configType', 'updatedByUid', 'updatedAt']) &&
+             data.configType is string &&
+             data.configType == configId &&
+             data.updatedByUid is string &&
+             data.updatedByUid == request.auth.uid &&
+             data.updatedAt is timestamp &&
+             data.updatedAt <= request.time &&
+             (!('opPsaEnabled' in data) || data.opPsaEnabled is bool) &&
+             (!('opScriptsEnabled' in data) || data.opScriptsEnabled is bool) &&
+             (!('opAutomationEnabled' in data) || data.opAutomationEnabled is bool) &&
+             (!('opDashboardEnabled' in data) || data.opDashboardEnabled is bool) &&
+             (!('opAiSalesEnabled' in data) || data.opAiSalesEnabled is bool) &&
+             (!('opPricingEditEnabled' in data) || data.opPricingEditEnabled is bool) &&
+             (!('suPsaEnabled' in data) || data.suPsaEnabled is bool) &&
+             (!('suScriptsEnabled' in data) || data.suScriptsEnabled is bool) &&
+             (!('suAutomationEnabled' in data) || data.suAutomationEnabled is bool) &&
+             (!('suDashboardEnabled' in data) || data.suDashboardEnabled is bool) &&
+             (!('suSuperuserEnabled' in data) || data.suSuperuserEnabled is bool) &&
+             (!('globalLegacyEnabled' in data) || data.globalLegacyEnabled is bool) &&
+             (!('latestVersionCode' in data) || (data.latestVersionCode is int && data.latestVersionCode >= 1 && data.latestVersionCode <= 100000)) &&
+             (!('latestVersionName' in data) || (data.latestVersionName is string && data.latestVersionName.size() <= 40)) &&
+             (!('apkDownloadUrl' in data) || (data.apkDownloadUrl is string && data.apkDownloadUrl.size() <= 500)) &&
+             (!('releaseNotes' in data) || (data.releaseNotes is string && data.releaseNotes.size() <= 1000)) &&
+             (!('payloadJson' in data) || (data.payloadJson is string && data.payloadJson.size() <= 200000));
+    }
+
+    match /authorized_users/{emailKey} {
+      allow get: if isValidEmailKey(emailKey) &&
+                    (isSuperuser() || (isSignedIn() && emailKey == authEmail()));
+
+      // Only bootstrap admin uses list queries so allow list contains zero get()/exists() calls
+      allow list: if isBootstrapAdmin();
+
+      allow create: if isValidEmailKey(emailKey) &&
+                       isValidAuthorizedUser(request.resource.data, emailKey) &&
+                       (
+                         (isSuperuser() && request.resource.data.role == 'OPERATOR') ||
+                         (isBootstrapAdmin() &&
+                          emailKey == 'leonelizondo16@gmail.com' &&
+                          request.resource.data.role == 'SUPERUSER' &&
+                          request.resource.data.ownerUid == request.auth.uid)
+                       );
+
+      allow update: if isValidEmailKey(emailKey) &&
+                       isValidAuthorizedUser(request.resource.data, emailKey) &&
+                       request.resource.data.email == resource.data.email &&
+                       request.resource.data.id == resource.data.id &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       (
+                         isSuperuser() ||
+                         (isSignedIn() &&
+                          emailKey == authEmail() &&
+                          resource.data.isBlocked == false &&
+                          resource.data.expiresAt > request.time &&
+                          request.resource.data.diff(resource.data).affectedKeys()
+                            .hasOnly(['boundDeviceIds', 'boundDeviceLabels', 'ownerUid', 'updatedAt', 'lastTamperAlertAtMs']) &&
+                          request.resource.data.boundDeviceIds.size() <= resource.data.maxDevices &&
+                          request.resource.data.boundDeviceIds.hasAll(resource.data.boundDeviceIds) &&
+                          (
+                            (resource.data.ownerUid == '' && request.resource.data.ownerUid == request.auth.uid) ||
+                            (resource.data.ownerUid == request.auth.uid && request.resource.data.ownerUid == resource.data.ownerUid)
+                          ))
+                       );
+
+      allow delete: if isValidEmailKey(emailKey) && isSuperuser() && emailKey != 'leonelizondo16@gmail.com';
+    }
+
+    function isOwner(ownerUid) {
+      return isSignedIn() &&
+             ownerUid is string &&
+             ownerUid.size() >= 1 &&
+             ownerUid.size() <= 128 &&
+             request.auth.uid == ownerUid;
+    }
+
+    function isValidSellerContact(data, ownerUid, contactId) {
+      return data.keys().hasAll([
+               'id', 'ownerUid', 'name', 'phone', 'address', 'neighborhood',
+               'notes', 'source', 'callAttemptsCount', 'messageAttemptsCount',
+               'lastContactDateMs', 'lastContactChannel', 'status',
+               'rescheduleDate', 'rescheduleNote', 'createdAtMs', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'ownerUid', 'name', 'phone', 'address', 'neighborhood',
+               'notes', 'source', 'callAttemptsCount', 'messageAttemptsCount',
+               'lastContactDateMs', 'lastContactChannel', 'status',
+               'rescheduleDate', 'rescheduleNote', 'createdAtMs', 'updatedAt'
+             ]) &&
+             data.id is string && data.id == contactId && data.id.size() >= 1 && data.id.size() <= 80 &&
+             data.ownerUid is string && data.ownerUid == ownerUid &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             data.phone is string && data.phone.size() <= 40 &&
+             data.address is string && data.address.size() <= 200 &&
+             data.neighborhood is string && data.neighborhood.size() <= 120 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.source is string && data.source.size() <= 60 &&
+             data.callAttemptsCount is int && data.callAttemptsCount >= 0 && data.callAttemptsCount <= 10000 &&
+             data.messageAttemptsCount is int && data.messageAttemptsCount >= 0 && data.messageAttemptsCount <= 10000 &&
+             data.lastContactDateMs is int && data.lastContactDateMs >= 0 &&
+             data.lastContactChannel is string && data.lastContactChannel.size() <= 20 &&
+             data.status in ['PENDING', 'INTERESTED', 'NO_ANSWER', 'RESCHEDULED', 'APPOINTMENT_SET', 'NOT_INTERESTED'] &&
+             data.rescheduleDate is string && data.rescheduleDate.size() <= 20 &&
+             data.rescheduleNote is string && data.rescheduleNote.size() <= 300 &&
+             data.createdAtMs is int && data.createdAtMs >= 0 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSellerVisit(data, ownerUid, visitId) {
+      return data.keys().hasAll([
+               'id', 'ownerUid', 'customerName', 'phone', 'address', 'neighborhood',
+               'scheduledDate', 'scheduledTime', 'modelInterest', 'status', 'chlorinePpm',
+               'waterSource', 'hardnessPpm', 'realLitersPerDay', 'cartSummary', 'soldCartSummary',
+               'testPhotoPath', 'diagnosticTimestampMs', 'bottlesPerWeek', 'quotedPlan',
+               'notes', 'createdAtMs', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'ownerUid', 'customerName', 'phone', 'address', 'neighborhood',
+               'scheduledDate', 'scheduledTime', 'modelInterest', 'status', 'chlorinePpm',
+               'waterSource', 'hardnessPpm', 'realLitersPerDay', 'cartSummary', 'soldCartSummary',
+               'testPhotoPath', 'diagnosticTimestampMs', 'bottlesPerWeek', 'quotedPlan',
+               'notes', 'createdAtMs', 'updatedAt'
+             ]) &&
+             data.id is string && data.id == visitId && data.id.size() >= 1 && data.id.size() <= 80 &&
+             data.ownerUid is string && data.ownerUid == ownerUid &&
+             data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+             data.phone is string && data.phone.size() <= 40 &&
+             data.address is string && data.address.size() <= 200 &&
+             data.neighborhood is string && data.neighborhood.size() <= 120 &&
+             data.scheduledDate is string && data.scheduledDate.size() <= 20 &&
+             data.scheduledTime is string && data.scheduledTime.size() <= 16 &&
+             data.modelInterest is string && data.modelInterest.size() <= 120 &&
+             data.status in ['AGENDADA', 'CONFIRMADA', 'EN_DEMOSTRACION', 'CERRADA_EXITO', 'REPROGRAMAR', 'CANCELADA'] &&
+             data.chlorinePpm is number && data.chlorinePpm >= 0 && data.chlorinePpm <= 10 &&
+             data.waterSource is string && data.waterSource.size() <= 40 &&
+             data.hardnessPpm is int && data.hardnessPpm >= 0 && data.hardnessPpm <= 2000 &&
+             data.realLitersPerDay is number && data.realLitersPerDay >= 0 && data.realLitersPerDay <= 500 &&
+             data.cartSummary is string && data.cartSummary.size() <= 500 &&
+             data.soldCartSummary is string && data.soldCartSummary.size() <= 500 &&
+             data.testPhotoPath is string && data.testPhotoPath.size() <= 400 &&
+             data.diagnosticTimestampMs is int && data.diagnosticTimestampMs >= 0 &&
+             data.bottlesPerWeek is int && data.bottlesPerWeek >= 0 && data.bottlesPerWeek <= 500 &&
+             data.quotedPlan is string && data.quotedPlan.size() <= 400 &&
+             data.notes is string && data.notes.size() <= 600 &&
+             data.createdAtMs is int && data.createdAtMs >= 0 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPostSaleRecord(data, ownerUid, recordId) {
+      return data.keys().hasAll([
+               'id', 'ownerUid', 'contactId', 'visitId', 'customerName', 'customerPhone',
+               'purifierId', 'purifierName', 'installedAtMs', 'replacementCycleMonths',
+               'nextReplacementAtMs', 'lastNotifiedDayKey', 'status', 'notes',
+               'createdAtMs', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'ownerUid', 'contactId', 'visitId', 'customerName', 'customerPhone',
+               'purifierId', 'purifierName', 'installedAtMs', 'replacementCycleMonths',
+               'nextReplacementAtMs', 'lastNotifiedDayKey', 'status', 'notes',
+               'createdAtMs', 'updatedAt'
+             ]) &&
+             data.id is string && data.id == recordId && data.id.size() >= 1 && data.id.size() <= 80 &&
+             data.ownerUid is string && data.ownerUid == ownerUid &&
+             data.contactId is string && data.contactId.size() <= 80 &&
+             data.visitId is string && data.visitId.size() <= 80 &&
+             data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+             data.customerPhone is string && data.customerPhone.size() <= 40 &&
+             data.purifierId is string && data.purifierId.size() >= 1 && data.purifierId.size() <= 80 &&
+             data.purifierName is string && data.purifierName.size() >= 1 && data.purifierName.size() <= 160 &&
+             data.installedAtMs is int && data.installedAtMs >= 0 &&
+             data.replacementCycleMonths in [6, 12, 24, 36] &&
+             data.nextReplacementAtMs is int && data.nextReplacementAtMs >= 0 &&
+             data.lastNotifiedDayKey is string && data.lastNotifiedDayKey.size() <= 20 &&
+             data.status in ['ACTIVO', 'ATENDIDO'] &&
+             data.notes is string && data.notes.size() <= 400 &&
+             data.createdAtMs is int && data.createdAtMs >= 0 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSellerStats(data, ownerUid) {
+      return data.keys().hasAll([
+               'ownerUid', 'sellerName', 'sellerEmail', 'totalContacts', 'totalVisits',
+               'completedDemos', 'closedSales', 'pendingReplacements', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'ownerUid', 'sellerName', 'sellerEmail', 'totalContacts', 'totalVisits',
+               'completedDemos', 'closedSales', 'pendingReplacements', 'updatedAt'
+             ]) &&
+             data.ownerUid is string && data.ownerUid == ownerUid &&
+             data.sellerName is string && data.sellerName.size() >= 1 && data.sellerName.size() <= 80 &&
+             data.sellerEmail is string && data.sellerEmail.size() >= 5 && data.sellerEmail.size() <= 120 &&
+             data.totalContacts is int && data.totalContacts >= 0 && data.totalContacts <= 100000 &&
+             data.totalVisits is int && data.totalVisits >= 0 && data.totalVisits <= 100000 &&
+             data.completedDemos is int && data.completedDemos >= 0 && data.completedDemos <= 100000 &&
+             data.closedSales is int && data.closedSales >= 0 && data.closedSales <= 100000 &&
+             data.pendingReplacements is int && data.pendingReplacements >= 0 && data.pendingReplacements <= 100000 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /team_config/{configId} {
+      allow get: if isValidConfigId(configId) &&
+                    (isActiveAuthorizedMember() || (configId == 'app_version' && isSignedIn()));
+      allow list: if isBootstrapAdmin();
+      allow create, update: if isValidConfigId(configId) &&
+                               isSuperuser() &&
+                               isValidTeamConfig(request.resource.data, configId);
+      allow delete: if isValidConfigId(configId) && isBootstrapAdmin();
+    }
+
+    match /seller_workspaces/{ownerUid} {
+      match /contacts/{contactId} {
+        allow get, list: if isOwner(ownerUid);
+        allow create: if isOwner(ownerUid) && isValidSellerContact(request.resource.data, ownerUid, contactId);
+        allow update: if isOwner(ownerUid) &&
+                         isValidSellerContact(request.resource.data, ownerUid, contactId) &&
+                         request.resource.data.ownerUid == resource.data.ownerUid &&
+                         request.resource.data.id == resource.data.id;
+        allow delete: if isOwner(ownerUid);
+      }
+
+      match /visits/{visitId} {
+        allow get, list: if isOwner(ownerUid);
+        allow create: if isOwner(ownerUid) && isValidSellerVisit(request.resource.data, ownerUid, visitId);
+        allow update: if isOwner(ownerUid) &&
+                         isValidSellerVisit(request.resource.data, ownerUid, visitId) &&
+                         request.resource.data.ownerUid == resource.data.ownerUid &&
+                         request.resource.data.id == resource.data.id;
+        allow delete: if isOwner(ownerUid);
+      }
+
+      match /post_sale/{recordId} {
+        allow get, list: if isOwner(ownerUid);
+        allow create: if isOwner(ownerUid) && isValidPostSaleRecord(request.resource.data, ownerUid, recordId);
+        allow update: if isOwner(ownerUid) &&
+                         isValidPostSaleRecord(request.resource.data, ownerUid, recordId) &&
+                         request.resource.data.ownerUid == resource.data.ownerUid &&
+                         request.resource.data.id == resource.data.id;
+        allow delete: if isOwner(ownerUid);
+      }
+    }
+
+    match /seller_stats/{ownerUid} {
+      allow get: if isOwner(ownerUid) || isBootstrapAdmin();
+      allow list: if isBootstrapAdmin();
+      allow create: if isOwner(ownerUid) && isValidSellerStats(request.resource.data, ownerUid);
+      allow update: if isOwner(ownerUid) &&
+                       isValidSellerStats(request.resource.data, ownerUid) &&
+                       request.resource.data.ownerUid == resource.data.ownerUid;
+      allow delete: if isBootstrapAdmin();
+    }
+  }
+}

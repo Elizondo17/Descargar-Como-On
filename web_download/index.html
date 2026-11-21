@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Como On PSA — Descarga Oficial APK</title>
+  <meta name="description" content="Portal oficial de descarga de Como On PSA para Android. Agenda de visitas, demostración de agua por foto, cotizador multi-equipo y posventa.">
+  <meta name="theme-color" content="#0B1220">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    :root {
+      --bg-dark: #0B1220;
+      --card-bg: rgba(19, 28, 46, 0.88);
+      --card-inner: rgba(11, 18, 32, 0.72);
+      --border-subtle: rgba(56, 189, 248, 0.22);
+      --cyan-primary: #06B6D4;
+      --cyan-glow: #38BDF8;
+      --emerald: #10B981;
+      --text-main: #F8FAFC;
+      --text-secondary: #CBD5E1;
+      --text-muted: #94A3B8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      background-image:
+        radial-gradient(circle at 20% 0%, rgba(6, 182, 212, 0.20) 0%, transparent 50%),
+        radial-gradient(circle at 85% 90%, rgba(16, 185, 129, 0.14) 0%, transparent 45%);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 28px 16px 40px;
+      line-height: 1.5;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 540px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 26px;
+      padding: 32px 24px;
+      box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.65);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, var(--cyan-primary), var(--emerald), transparent);
+    }
+
+    .hero {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .logo-badge {
+      width: 78px;
+      height: 78px;
+      margin: 0 auto 14px;
+      border-radius: 22px;
+      background: linear-gradient(135deg, #0E7490 0%, #0369A1 55%, #0F172A 100%);
+      border: 1.5px solid rgba(56, 189, 248, 0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      box-shadow: 0 12px 28px -6px rgba(6, 182, 212, 0.45);
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.4px;
+      margin-bottom: 6px;
+      color: #FFFFFF;
+    }
+
+    .subtitle {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 14px;
+    }
+
+    .meta-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(16, 185, 129, 0.14);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      color: #34D399;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--emerald);
+      box-shadow: 0 0 8px var(--emerald);
+    }
+
+    .download-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 54px;
+      padding: 15px 20px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #06B6D4 0%, #0284C7 100%);
+      color: #FFFFFF;
+      text-decoration: none;
+      font-size: 16px;
+      font-weight: 800;
+      box-shadow: 0 12px 24px -6px rgba(6, 182, 212, 0.50);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      margin-bottom: 10px;
+    }
+
+    .download-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 28px -6px rgba(6, 182, 212, 0.65);
+    }
+
+    .action-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+
+    .secondary-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 48px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: var(--card-inner);
+      border: 1px solid rgba(56, 189, 248, 0.32);
+      color: var(--cyan-glow);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s ease;
+    }
+
+    .secondary-btn:hover {
+      background: rgba(56, 189, 248, 0.12);
+    }
+
+    .secondary-btn.wa {
+      border-color: rgba(16, 185, 129, 0.40);
+      color: #34D399;
+    }
+
+    .secondary-btn.wa:hover {
+      background: rgba(16, 185, 129, 0.14);
+    }
+
+    .section-box {
+      background: var(--card-inner);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 18px;
+      padding: 18px 16px;
+      margin-bottom: 18px;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--cyan-glow);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .qr-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 10px;
+    }
+
+    #qrcode {
+      background: #FFFFFF;
+      padding: 12px;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 174px;
+      min-height: 174px;
+    }
+
+    .url-chip {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      word-break: break-all;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 10px;
+      padding: 7px 10px;
+      width: 100%;
+    }
+
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(6, 182, 212, 0.20);
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      color: var(--cyan-glow);
+      font-size: 12px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 1px;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    @media (max-width: 460px) {
+      .features-grid {
+        grid-template-columns: 1fr;
+      }
+      .action-row {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .feature-item {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .feature-item strong {
+      display: block;
+      font-size: 12.5px;
+      color: #FFFFFF;
+      margin-bottom: 3px;
+    }
+
+    .feature-item span {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      line-height: 1.35;
+      display: block;
+    }
+
+    .hash-box {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .hash-code {
+      display: block;
+      margin-top: 6px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 10.5px;
+      color: var(--text-secondary);
+      word-break: break-all;
+      cursor: pointer;
+    }
+
+    .footer-note {
+      text-align: center;
+      margin-top: 16px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <section class="card">
+      <header class="hero">
+        <div class="logo-badge" aria-hidden="true">💧</div>
+        <h1>Como On PSA</h1>
+        <p class="subtitle">Herramienta comercial oficial para asesores PSA: agenda, demostración de agua, cotizador y posventa.</p>
+        <div class="meta-pill">
+          <span class="dot"></span>
+          <span>Versión PSA 1.0 • 31.6 MB • Android 7.0+</span>
+        </div>
+      </header>
+
+      <a class="download-btn" id="btnDownloadApk" href="./ComoOn-PSA.apk" download="ComoOn-PSA.apk">
+        <span>⬇️ Descargar APK Oficial (Como On PSA)</span>
+      </a>
+
+      <div class="action-row">
+        <button class="secondary-btn" id="btnCopyUrl" type="button">🔗 Copiar enlace</button>
+        <a class="secondary-btn wa" id="btnShareWa" href="#" target="_blank" rel="noopener">📲 Enviar por WhatsApp</a>
+      </div>
+
+      <section class="section-box">
+        <div class="section-title">📱 Escanear con otro teléfono (QR)</div>
+        <div class="qr-wrapper">
+          <div id="qrcode" aria-label="Código QR de descarga de Como On PSA"></div>
+          <div class="url-chip" id="publicUrlLabel">https://gen-lang-client-0791441970.web.app</div>
+        </div>
+      </section>
+
+      <section class="section-box">
+        <div class="section-title">🛠️ Instalación en 4 pasos (Android)</div>
+        <div class="steps">
+          <div class="step">
+            <span class="step-num">1</span>
+            <span>Toca <strong>Descargar APK Oficial</strong> y espera a que finalice la descarga (31.6 MB).</span>
+          </div>
+          <div class="step">
+            <span class="step-num">2</span>
+            <span>Abre el archivo <strong>ComoOn-PSA.apk</strong> desde la barra de notificaciones o la carpeta Descargas.</span>
+          </div>
+          <div class="step">
+            <span class="step-num">3</span>
+            <span>Si Android pregunta por seguridad, activa <strong>Permitir desde esta fuente</strong> (navegador o archivos) y pulsa <strong>Instalar</strong>.</span>
+          </div>
+          <div class="step">
+            <span class="step-num">4</span>
+            <span>Abre la app, toca <strong>Continuar con Google</strong> e ingresa con el correo Gmail habilitado por tu coordinador.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section-box">
+        <div class="section-title">✨ Funciones incluidas en esta versión</div>
+        <div class="features-grid">
+          <div class="feature-item">
+            <strong>🧪 Demo Cloro & Pozo</strong>
+            <span>Foto real del test con lectura automática de color y recomendación de equipo.</span>
+          </div>
+          <div class="feature-item">
+            <strong>🛒 Cotizador Multi-Equipo</strong>
+            <span>Arma carrito combinado (ej. Senior 4 + Ducha), cuotas y PDF/WhatsApp.</span>
+          </div>
+          <div class="feature-item">
+            <strong>📅 Agenda Privada Cloud</strong>
+            <span>Visitas y contactos sincronizados por vendedor con respaldo automático.</span>
+          </div>
+          <div class="feature-item">
+            <strong>🔔 Recambios Posventa</strong>
+            <span>Control automático de cambios de filtros con avisos por WhatsApp.</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="hash-box">
+        <span>Integridad verificada (SHA-256 oficial del binario):</span>
+        <code class="hash-code" id="shaBox" title="Toca para copiar SHA-256">e7e3941dc3efd2f4c067206cb427a1debdbf67d3b4eb60ea38c908fe5f69a1a2</code>
+      </div>
+
+      <p class="footer-note">Cada vendedor ingresa exclusivamente con su cuenta Google autorizada.</p>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      var defaultUrl = "https://gen-lang-client-0791441970.web.app";
+      var activeUrl = window.location.protocol.indexOf("http") === 0
+        ? (window.location.origin + window.location.pathname).replace(/\/index\.html$/, "").replace(/\/$/, "")
+        : defaultUrl;
+
+      var urlLabel = document.getElementById("publicUrlLabel");
+      if (urlLabel) urlLabel.textContent = activeUrl;
+
+      var waLink = document.getElementById("btnShareWa");
+      if (waLink) {
+        var msg = "📲 Descarga Como On PSA (APK Oficial)\n\n🔗 Enlace directo:\n" + activeUrl + "\n\n👉 Instala en Android y entra con 'Continuar con Google'.";
+        waLink.href = "https://api.whatsapp.com/send?text=" + encodeURIComponent(msg);
+      }
+
+      var qrContainer = document.getElementById("qrcode");
+      if (qrContainer && typeof QRCode !== "undefined") {
+        new QRCode(qrContainer, {
+          text: activeUrl,
+          width: 150,
+          height: 150,
+          colorDark: "#0B1220",
+          colorLight: "#FFFFFF",
+          correctLevel: QRCode.CorrectLevel.M
+        });
+      } else if (qrContainer) {
+        qrContainer.innerHTML = "<span style='color:#0B1220;font-size:12px;font-weight:700;padding:12px;'>Abre:<br>" + activeUrl + "</span>";
+      }
+
+      var copyBtn = document.getElementById("btnCopyUrl");
+      if (copyBtn) {
+        copyBtn.addEventListener("click", function () {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(activeUrl).then(function () {
+              copyBtn.textContent = "✅ Enlace copiado";
+              setTimeout(function () { copyBtn.textContent = "🔗 Copiar enlace"; }, 2200);
+            });
+          }
+        });
+      }
+
+      var shaBox = document.getElementById("shaBox");
+      if (shaBox) {
+        shaBox.addEventListener("click", function () {
+          var hash = shaBox.textContent.trim();
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(hash).then(function () {
+              shaBox.textContent = "✅ SHA-256 copiado: " + hash;
+              setTimeout(function () { shaBox.textContent = hash; }, 2200);
+            });
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

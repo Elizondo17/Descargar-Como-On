@@ -1,0 +1,12 @@
+[
+  {
+    "id": "price-objection-1",
+    "category": "PRECIO",
+    "triggerContext": "Está muy caro",
+    "winningContent": "Entiendo que el precio sea prioritario. Comparado con lo que pierdes al día sin esto, se paga solo en 48 horas. ¿Prefieres pago en cuotas o contado con descuento?",
+    "successScore": 6,
+    "usageCount": 11,
+    "isQuestion": false,
+    "createdAt": 1793940049899
+  }
+]

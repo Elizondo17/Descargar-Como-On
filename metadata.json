@@ -1,0 +1,8 @@
+{
+  "name": "Remix ComoON V.3",
+  "description": "Herramienta de automatización de mensajería para EzoCrm con servicio de accesibilidad, filtros por fecha y carpeta, control de spam (30-45s), estadísticas y gestión de usuarios con tokens por días para superusuario.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

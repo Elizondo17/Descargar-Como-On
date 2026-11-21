@@ -1,0 +1,298 @@
+{
+  "entities": {
+    "AuthorizedUser": {
+      "title": "AuthorizedUser",
+      "description": "Cloud-authorized operator or superuser account bound to verified Google Sign-In email and hardware devices.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable user identifier"
+        },
+        "email": {
+          "type": "string",
+          "description": "Normalized lowercase Google email matching document ID"
+        },
+        "username": {
+          "type": "string",
+          "description": "Display name of the operator or superuser"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["SUPERUSER", "OPERATOR"],
+          "description": "Authorization role"
+        },
+        "daysGranted": {
+          "type": "integer",
+          "description": "Total active days granted by admin"
+        },
+        "validFrom": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Activation timestamp written via FieldValue.serverTimestamp()"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Cloud-enforced license expiration timestamp"
+        },
+        "isBlocked": {
+          "type": "boolean",
+          "description": "Remote block switch controlled by Superuser"
+        },
+        "canAccessLegacyModules": {
+          "type": "boolean",
+          "description": "Per-user override to enable legacy EzoCRM tabs"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Admin notes or shift details"
+        },
+        "maxDevices": {
+          "type": "integer",
+          "description": "Maximum allowed hardware devices (default 1, up to 5 for special cases)"
+        },
+        "boundDeviceIds": {
+          "type": "array",
+          "description": "Installation device IDs currently linked to this user (size <= maxDevices <= 5)"
+        },
+        "boundDeviceLabels": {
+          "type": "array",
+          "description": "Human-readable phone model labels aligned with boundDeviceIds"
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "Firebase Auth UID claimed on first Google Sign-In"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Document creation timestamp written via FieldValue.serverTimestamp()"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last modification timestamp written via FieldValue.serverTimestamp()"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "username",
+        "role",
+        "daysGranted",
+        "validFrom",
+        "expiresAt",
+        "isBlocked",
+        "canAccessLegacyModules",
+        "notes",
+        "maxDevices",
+        "boundDeviceIds",
+        "boundDeviceLabels",
+        "ownerUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TeamConfig": {
+      "title": "TeamConfig",
+      "description": "Singleton team configuration documents such as role_matrix, alerts_feed, knowledge_feed, psa_pricing_sync, and app_version.",
+      "type": "object",
+      "properties": {
+        "configType": {
+          "type": "string",
+          "enum": ["role_matrix", "alerts_feed", "knowledge_feed", "psa_pricing_sync", "app_version"],
+          "description": "Type of team configuration singleton"
+        },
+        "opPsaEnabled": { "type": "boolean" },
+        "opScriptsEnabled": { "type": "boolean" },
+        "opAutomationEnabled": { "type": "boolean" },
+        "opDashboardEnabled": { "type": "boolean" },
+        "opAiSalesEnabled": { "type": "boolean" },
+        "opPricingEditEnabled": { "type": "boolean" },
+        "suPsaEnabled": { "type": "boolean" },
+        "suScriptsEnabled": { "type": "boolean" },
+        "suAutomationEnabled": { "type": "boolean" },
+        "suDashboardEnabled": { "type": "boolean" },
+        "suSuperuserEnabled": { "type": "boolean" },
+        "globalLegacyEnabled": { "type": "boolean" },
+        "latestVersionCode": {
+          "type": "integer",
+          "description": "Latest published Android versionCode on server"
+        },
+        "latestVersionName": {
+          "type": "string",
+          "description": "Latest published Android versionName on server"
+        },
+        "apkDownloadUrl": {
+          "type": "string",
+          "description": "HTTPS URL to download the latest APK"
+        },
+        "releaseNotes": {
+          "type": "string",
+          "description": "Optional release notes displayed in the update prompt"
+        },
+        "payloadJson": {
+          "type": "string",
+          "description": "Bounded JSON string for shared team feeds"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the Superuser updating this document"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update"
+        }
+      },
+      "required": ["configType", "updatedByUid", "updatedAt"]
+    },
+    "PsaContactRecord": {
+      "title": "PsaContactRecord",
+      "description": "Seller-isolated prospect / lead synced to owner workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "neighborhood": { "type": "string" },
+        "notes": { "type": "string" },
+        "source": { "type": "string" },
+        "callAttemptsCount": { "type": "integer" },
+        "messageAttemptsCount": { "type": "integer" },
+        "lastContactDateMs": { "type": "integer" },
+        "lastContactChannel": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "INTERESTED", "NO_ANSWER", "RESCHEDULED", "APPOINTMENT_SET", "NOT_INTERESTED"]
+        },
+        "rescheduleDate": { "type": "string" },
+        "rescheduleNote": { "type": "string" },
+        "createdAtMs": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "ownerUid", "name", "phone", "address", "neighborhood", "notes", "source",
+        "callAttemptsCount", "messageAttemptsCount", "lastContactDateMs", "lastContactChannel",
+        "status", "rescheduleDate", "rescheduleNote", "createdAtMs", "updatedAt"
+      ]
+    },
+    "PsaVisitRecord": {
+      "title": "PsaVisitRecord",
+      "description": "Seller-isolated scheduled visit and technical demo diagnostic history.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "customerName": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "neighborhood": { "type": "string" },
+        "scheduledDate": { "type": "string" },
+        "scheduledTime": { "type": "string" },
+        "modelInterest": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["AGENDADA", "CONFIRMADA", "EN_DEMOSTRACION", "CERRADA_EXITO", "REPROGRAMAR", "CANCELADA"]
+        },
+        "chlorinePpm": { "type": "number" },
+        "waterSource": { "type": "string" },
+        "hardnessPpm": { "type": "integer" },
+        "realLitersPerDay": { "type": "number" },
+        "cartSummary": { "type": "string" },
+        "soldCartSummary": { "type": "string" },
+        "testPhotoPath": { "type": "string" },
+        "diagnosticTimestampMs": { "type": "integer" },
+        "bottlesPerWeek": { "type": "integer" },
+        "quotedPlan": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAtMs": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "ownerUid", "customerName", "phone", "address", "neighborhood",
+        "scheduledDate", "scheduledTime", "modelInterest", "status", "chlorinePpm",
+        "waterSource", "hardnessPpm", "realLitersPerDay", "cartSummary", "soldCartSummary",
+        "testPhotoPath", "diagnosticTimestampMs", "bottlesPerWeek", "quotedPlan", "notes",
+        "createdAtMs", "updatedAt"
+      ]
+    },
+    "PsaPostSaleRecord": {
+      "title": "PsaPostSaleRecord",
+      "description": "Seller-isolated after-sales installation and filter replacement cycle reminder.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "contactId": { "type": "string" },
+        "visitId": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "purifierId": { "type": "string" },
+        "purifierName": { "type": "string" },
+        "installedAtMs": { "type": "integer" },
+        "replacementCycleMonths": { "type": "integer", "enum": [6, 12, 24, 36] },
+        "nextReplacementAtMs": { "type": "integer" },
+        "lastNotifiedDayKey": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVO", "ATENDIDO"] },
+        "notes": { "type": "string" },
+        "createdAtMs": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "ownerUid", "contactId", "visitId", "customerName", "customerPhone",
+        "purifierId", "purifierName", "installedAtMs", "replacementCycleMonths",
+        "nextReplacementAtMs", "lastNotifiedDayKey", "status", "notes", "createdAtMs", "updatedAt"
+      ]
+    },
+    "SellerStats": {
+      "title": "SellerStats",
+      "description": "Aggregated non-PII KPIs per seller for the admin performance dashboard.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "sellerName": { "type": "string" },
+        "sellerEmail": { "type": "string" },
+        "totalContacts": { "type": "integer" },
+        "totalVisits": { "type": "integer" },
+        "completedDemos": { "type": "integer" },
+        "closedSales": { "type": "integer" },
+        "pendingReplacements": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerUid", "sellerName", "sellerEmail", "totalContacts", "totalVisits",
+        "completedDemos", "closedSales", "pendingReplacements", "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/authorized_users/{emailKey}": {
+      "schema": { "$ref": "#/entities/AuthorizedUser" },
+      "description": "Google email allowlist, expiration, remote blocking, and multi-device hardware binding per user"
+    },
+    "/team_config/{configId}": {
+      "schema": { "$ref": "#/entities/TeamConfig" },
+      "description": "Singleton role matrix and shared team feeds managed by Superuser"
+    },
+    "/seller_workspaces/{ownerUid}/contacts/{contactId}": {
+      "schema": { "$ref": "#/entities/PsaContactRecord" },
+      "description": "Private contacts owned by each seller UID"
+    },
+    "/seller_workspaces/{ownerUid}/visits/{visitId}": {
+      "schema": { "$ref": "#/entities/PsaVisitRecord" },
+      "description": "Private home visits and technical diagnostics owned by each seller UID"
+    },
+    "/seller_workspaces/{ownerUid}/post_sale/{recordId}": {
+      "schema": { "$ref": "#/entities/PsaPostSaleRecord" },
+      "description": "Private after-sales installations and filter replacement schedules owned by each seller UID"
+    },
+    "/seller_stats/{ownerUid}": {
+      "schema": { "$ref": "#/entities/SellerStats" },
+      "description": "Aggregated KPI totals per seller readable by bootstrap admin"
+    }
+  }
+}

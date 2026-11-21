@@ -1,0 +1,119 @@
+name: Publicar APK Como On PSA
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "publish-apk-and-pages"
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    name: Compilar APK Oficial y Publicar Gratis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cachear dependencias Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Preparar firma compatible con Google Sign-In y secretos por defecto
+        run: |
+          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+          chmod +x gradlew
+
+      - name: Compilar APK Oficial (ComoOn-PSA.apk)
+        run: |
+          ./gradlew :app:assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ComoOn-PSA.apk
+          SHA256=$(sha256sum ComoOn-PSA.apk | awk '{print $1}')
+          BYTES=$(stat -c "%s" ComoOn-PSA.apk)
+          SIZE_MB=$(awk "BEGIN {printf \"%.1f\", $BYTES / (1024 * 1024)}")
+          echo "APK_SHA256=$SHA256" >> $GITHUB_ENV
+          echo "APK_SIZE_MB=$SIZE_MB" >> $GITHUB_ENV
+
+      - name: Publicar descarga directa permanente en GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Como On PSA — Última Versión
+          body: |
+            Instalador oficial de **Como On PSA** para Android.
+
+            - **Archivo:** `ComoOn-PSA.apk` (${{ env.APK_SIZE_MB }} MB)
+            - **SHA-256:** `${{ env.APK_SHA256 }}`
+            - **Ingreso:** Abrir la app y pulsar **Continuar con Google** con tu correo Gmail habilitado.
+          files: |
+            ComoOn-PSA.apk
+          prerelease: false
+          make_latest: true
+
+      - name: Distribuir automáticamente en Firebase App Distribution (si está configurado)
+        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: "1:846269182252:android:258683973aa94bc4c67c89"
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          groups: "vendedores-psa"
+          releaseNotes: "Como On PSA — Nueva compilación automática (${{ env.APK_SIZE_MB }} MB • SHA-256 ${{ env.APK_SHA256 }})."
+          file: ComoOn-PSA.apk
+
+      - name: Preparar web pública para GitHub Pages
+        run: |
+          mkdir -p _site_dist
+          cp -r public/* _site_dist/
+          cp ComoOn-PSA.apk _site_dist/ComoOn-PSA.apk
+          cp ComoOn-PSA.apk _site_dist/ComoOn.apk
+          RELEASE_APK_URL="https://github.com/${{ github.repository }}/releases/latest/download/ComoOn-PSA.apk"
+          sed -i "s|__APK_SIZE_MB__|${{ env.APK_SIZE_MB }}|g" _site_dist/index.html
+          sed -i "s|__APK_SHA256__|${{ env.APK_SHA256 }}|g" _site_dist/index.html
+          sed -i "s|__RELEASE_APK_URL__|${RELEASE_APK_URL}|g" _site_dist/index.html
+          sed -i "s|31.6 MB|${{ env.APK_SIZE_MB }} MB|g" _site_dist/index.html
+          sed -i "s|e7e3941dc3efd2f4c067206cb427a1debdbf67d3b4eb60ea38c908fe5f69a1a2|${{ env.APK_SHA256 }}|g" _site_dist/index.html
+
+      - name: Habilitar GitHub Pages
+        continue-on-error: true
+        uses: actions/configure-pages@v5
+
+      - name: Subir artefacto GitHub Pages
+        continue-on-error: true
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site_dist
+
+      - name: Configurar y publicar GitHub Pages
+        continue-on-error: true
+        id: deployment
+        uses: actions/deploy-pages@v4

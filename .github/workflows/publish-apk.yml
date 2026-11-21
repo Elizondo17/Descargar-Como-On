@@ -20,6 +20,8 @@ jobs:
   build-and-publish:
     name: Compilar APK Oficial y Publicar Gratis
     runs-on: ubuntu-latest
+    env:
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
     steps:
       - name: Descargar repositorio
@@ -81,7 +83,7 @@ jobs:
           make_latest: true
 
       - name: Distribuir automáticamente en Firebase App Distribution (si está configurado)
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        if: env.FIREBASE_SERVICE_ACCOUNT != ''
         uses: wzieba/Firebase-Distribution-Github-Action@v1
         with:
           appId: "1:846269182252:android:258683973aa94bc4c67c89"

@@ -835,14 +835,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun signInWithGoogle(activityContext: Context, onSuccess: () -> Unit = {}) {
-        val cloudRepo = repository.cloudTeamRepository ?: return
+        fun signInWithGoogle(activityContext: Context, onSuccess: () -> Unit = {}) {
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            _googleAuthUiState.value = GoogleAuthUiState.Error(
+                "Firebase no está inicializado en este APK. Revisa google-services.json."
+            )
+            return
+        }
         viewModelScope.launch {
             _googleAuthUiState.value = GoogleAuthUiState.Loading("Conectando con Google...")
             val signInResult = cloudRepo.signInInteractiveWithGoogle(activityContext)
             val firebaseUser = signInResult.getOrElse { err ->
                 _isCloudGoogleConnected.value = cloudRepo.getCurrentFirebaseUser() != null
-                _googleAuthUiState.value = GoogleAuthUiState.Error(err.message ?: "No se pudo iniciar sesión.")
+                _googleAuthUiState.value = GoogleAuthUiState.Error(
+                    err.message ?: "No se pudo iniciar sesión con Google (verifica SHA-1 en Firebase)."
+                )
                 return@launch
             }
             _isCloudGoogleConnected.value = true
@@ -856,6 +864,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             applyCloudAuthOutcome(outcome, onAuthorized = onSuccess)
         }
     }
+
 
     fun recheckCloudAccessNow(silentIfNotLocked: Boolean = false) {
         val cloudRepo = repository.cloudTeamRepository ?: return

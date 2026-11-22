@@ -137,7 +137,7 @@ enum class AppTab {
 }
 
 class MainActivity : ComponentActivity() {
-        override fun onCreate(savedInstanceState: Bundle?) {
+            override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         runCatching { com.google.firebase.FirebaseApp.initializeApp(this) }
         enableEdgeToEdge()

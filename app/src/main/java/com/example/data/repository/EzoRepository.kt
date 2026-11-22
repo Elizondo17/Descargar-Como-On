@@ -725,6 +725,28 @@ class EzoRepository(
         }
     }
 
+    suspend fun setUserUpdateLock(
+        userId: String,
+        updateRequired: Boolean,
+        requiredVersionCode: Int,
+        reason: String,
+        syncToCloud: Boolean = true
+    ) {
+        val cleanReason = reason.trim().take(300)
+        val safeRequiredCode = requiredVersionCode.coerceIn(0, 100000)
+        userDao.setUserUpdateLock(userId, updateRequired, safeRequiredCode, cleanReason)
+        val updatedUser = userDao.getUserById(userId)
+        val cloudRepo = cloudTeamRepository
+        if (syncToCloud && updatedUser != null && updatedUser.email.isNotBlank() && cloudRepo != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                cloudRepo.updateUserInCloud(updatedUser)
+            }
+        }
+        if (_currentUser.value?.id == userId && updatedUser != null) {
+            _currentUser.value = updatedUser
+        }
+    }
+
     suspend fun deleteUser(user: UserAccount) {
         userDao.deleteUser(user)
         userTokenDao.deleteByUserId(user.id)

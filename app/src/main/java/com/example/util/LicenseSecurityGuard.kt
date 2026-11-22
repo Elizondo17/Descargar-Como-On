@@ -13,6 +13,7 @@ import com.example.data.repository.FirestoreTeamRepository
 enum class AccessLockReason {
     NONE,
     ADMIN_BLOCKED,
+    UPDATE_REQUIRED,
     DAYS_EXPIRED,
     OFFLINE_OVER_24H,
     REBOOT_VERIFICATION_REQUIRED,

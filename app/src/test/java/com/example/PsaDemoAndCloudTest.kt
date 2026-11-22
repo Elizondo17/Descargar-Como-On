@@ -760,4 +760,169 @@ class PsaDemoAndCloudTest {
             intent.dataString
         )
     }
+
+    @Test
+    fun `appErrorLogger filters firebase errors from logcat redacts tokens and enforces bounded deduplicated queue`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.util.AppErrorLogger.clearQueue(context)
+
+        val rawLogcat = """
+            11-22 10:00:00.100  1234  1234 I Choreographer: Skipped 42 frames!
+            11-22 10:00:00.200  1234  1234 D ViewRootImpl: Surface created
+            11-22 10:00:00.300  1234  1250 E FirebaseApp: Default FirebaseApp failed to initialize Authorization Bearer secretToken12345.abc
+            11-22 10:00:00.400  1234  1251 W Firestore: UNAVAILABLE: Unable to resolve host
+            11-22 10:00:00.500  1234  1252 E FirebaseAuth: SecurityException PERMISSION_DENIED on token check
+        """.trimIndent()
+
+        val filtered = com.example.util.AppErrorLogger.extractFirebaseLogcatLines(rawLogcat)
+        assertFalse(filtered.contains("Choreographer"))
+        assertFalse(filtered.contains("ViewRootImpl"))
+        assertFalse(filtered.contains("secretToken12345"))
+        assertTrue(filtered.contains("Bearer [REDACTED]"))
+        assertTrue(filtered.contains("FirebaseApp"))
+        assertTrue(filtered.contains("Firestore"))
+        assertTrue(filtered.contains("FirebaseAuth"))
+        assertTrue(com.example.util.AppErrorLogger.hasCriticalFirebaseSignal(filtered))
+        assertFalse(com.example.util.AppErrorLogger.hasCriticalFirebaseSignal("I/Choreographer: ok"))
+
+        // Bounded queue (max 15)
+        val baseTime = 1_760_000_000_000L
+        for (i in 1..20) {
+            val added = com.example.util.AppErrorLogger.enqueuePendingError(
+                context = context,
+                stage = com.example.util.AppErrorStage.ON_CREATE,
+                errorMessage = "Firebase init error #$i",
+                stackTraceExcerpt = "java.lang.IllegalStateException: init #$i",
+                logcatExcerpt = filtered,
+                nowMs = baseTime + (i * 1000L)
+            )
+            assertTrue(added)
+        }
+        val queued = com.example.util.AppErrorLogger.getPendingErrors(context)
+        assertEquals(15, queued.size)
+        assertEquals("Firebase init error #6", queued.first().errorMessage)
+        assertEquals("Firebase init error #20", queued.last().errorMessage)
+
+        // Deduplication within 10-minute window
+        com.example.util.AppErrorLogger.clearQueue(context)
+        assertTrue(
+            com.example.util.AppErrorLogger.enqueuePendingError(
+                context = context,
+                stage = com.example.util.AppErrorStage.LOGCAT_FIREBASE,
+                errorMessage = "Duplicate Firebase failure",
+                nowMs = baseTime
+            )
+        )
+        assertFalse(
+            com.example.util.AppErrorLogger.enqueuePendingError(
+                context = context,
+                stage = com.example.util.AppErrorStage.LOGCAT_FIREBASE,
+                errorMessage = "Duplicate Firebase failure",
+                nowMs = baseTime + (5L * 60L * 1000L)
+            )
+        )
+        assertTrue(
+            com.example.util.AppErrorLogger.enqueuePendingError(
+                context = context,
+                stage = com.example.util.AppErrorStage.LOGCAT_FIREBASE,
+                errorMessage = "Duplicate Firebase failure",
+                nowMs = baseTime + (11L * 60L * 1000L)
+            )
+        )
+        val afterDedup = com.example.util.AppErrorLogger.getPendingErrors(context)
+        assertEquals(2, afterDedup.size)
+
+        com.example.util.AppErrorLogger.removePendingByIds(context, setOf(afterDedup.first().id))
+        assertEquals(1, com.example.util.AppErrorLogger.getPendingCount(context))
+        com.example.util.AppErrorLogger.clearQueue(context)
+    }
+
+    @Test
+    fun `appUpdateChecker evaluates two stage update notice per user lock global force update and auto unlock`() {
+        val now = 1_760_000_000_000L
+        val dayMs = 86_400_000L
+        val seller = UserAccount(
+            id = "vendedor@gmail.com",
+            username = "Vendedor PSA",
+            token = "CLOUD",
+            role = "OPERATOR",
+            daysGranted = 30,
+            validFromMs = now - dayMs,
+            expiresAtMs = now + 29L * dayMs,
+            email = "vendedor@gmail.com",
+            updateRequired = true,
+            requiredVersionCode = 5,
+            updateLockReason = "Actualizá a v1.5 para seguir operando"
+        )
+        val optionalServer = com.example.util.AppUpdateInfo(
+            latestVersionCode = 5,
+            latestVersionName = "1.5",
+            apkDownloadUrl = "https://github.com/Elizondo17/Descargar-Como-On/releases/latest/download/ComoOn-PSA.apk",
+            releaseNotes = "Nueva versión disponible",
+            forceUpdate = false
+        )
+
+        // Per-seller lock blocks older build (4 < 5)
+        val lockedEval = com.example.util.AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = 4,
+            user = seller,
+            serverInfo = optionalServer
+        )
+        assertTrue(lockedEval.isLocked)
+        assertEquals(5, lockedEval.requiredVersionCode)
+        assertFalse(lockedEval.shouldAutoClearUserFlag)
+        assertEquals("Actualizá a v1.5 para seguir operando", lockedEval.reasonText)
+
+        // Opening updated build (5 >= 5) unlocks automatically & flags self-clear
+        val unlockedEval = com.example.util.AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = 5,
+            user = seller,
+            serverInfo = optionalServer
+        )
+        assertFalse(unlockedEval.isLocked)
+        assertTrue(unlockedEval.shouldAutoClearUserFlag)
+
+        // Stage 1 optional notice (no per-user lock, forceUpdate = false): prompts without locking
+        val unlockedSeller = seller.copy(updateRequired = false, requiredVersionCode = 0, updateLockReason = "")
+        val optionalEval = com.example.util.AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = 4,
+            user = unlockedSeller,
+            serverInfo = optionalServer
+        )
+        assertFalse(optionalEval.isLocked)
+        assertTrue(com.example.util.AppUpdateChecker.isUpdateAvailable(4, optionalServer))
+
+        // Stage 2 global forceUpdate = true: locks older seller even when updateRequired = false, ignores dismissal
+        val forcedServer = optionalServer.copy(latestVersionCode = 6, latestVersionName = "1.6", forceUpdate = true)
+        assertTrue(com.example.util.AppUpdateChecker.isUpdateAvailable(5, forcedServer, dismissedVersionCode = 6))
+        val globalLockEval = com.example.util.AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = 5,
+            user = unlockedSeller,
+            serverInfo = forcedServer
+        )
+        assertTrue(globalLockEval.isLocked)
+        assertEquals(6, globalLockEval.requiredVersionCode)
+        assertFalse(globalLockEval.shouldAutoClearUserFlag)
+
+        // Seller on build 6 unlocks automatically from global forceUpdate
+        val globalUnlockedEval = com.example.util.AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = 6,
+            user = unlockedSeller,
+            serverInfo = forcedServer
+        )
+        assertFalse(globalUnlockedEval.isLocked)
+
+        // Superuser stays exempt from update lock
+        val superuser = unlockedSeller.copy(
+            id = "leonelizondo16@gmail.com",
+            email = "leonelizondo16@gmail.com",
+            role = "SUPERUSER"
+        )
+        val superEval = com.example.util.AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = 1,
+            user = superuser,
+            serverInfo = forcedServer
+        )
+        assertFalse(superEval.isLocked)
+    }
 }

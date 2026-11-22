@@ -82,6 +82,7 @@ class FirestoreTeamRepository(context: Context) {
         private const val SUBCOLLECTION_VISITS = "visits"
         private const val SUBCOLLECTION_POST_SALE = "post_sale"
         private const val COLLECTION_SELLER_STATS = "seller_stats"
+        private const val COLLECTION_APP_ERRORS = "AppErrors"
         private const val KEY_DEVICE_ID = "persistent_hardware_device_id"
         private const val KEY_LAST_SYNCED_UID = "last_synced_seller_uid"
         const val BOOTSTRAP_ADMIN_EMAIL = "leonelizondo16@gmail.com"
@@ -726,13 +727,15 @@ class FirestoreTeamRepository(context: Context) {
             )
             if (normalizedUrl.isBlank()) return null
             val notes = doc.getString("releaseNotes").orEmpty().trim()
+            val forceUpdate = doc.getBoolean("forceUpdate") ?: false
             val updatedAtMs = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
             com.example.util.AppUpdateInfo(
                 latestVersionCode = latestCode,
                 latestVersionName = latestName.ifBlank { latestCode.toString() },
                 apkDownloadUrl = normalizedUrl,
                 releaseNotes = notes,
-                updatedAtMs = updatedAtMs
+                updatedAtMs = updatedAtMs,
+                forceUpdate = forceUpdate
             )
         } catch (ce: CancellationException) {
             throw ce
@@ -743,13 +746,15 @@ class FirestoreTeamRepository(context: Context) {
     }
 
     /**
-     * Permite únicamente al Superusuario publicar en el servidor la versión más reciente y su enlace APK.
+     * Permite únicamente al Superusuario publicar en el servidor la versión más reciente, enlace APK
+     * y si es aviso opcional (`forceUpdate = false`) o actualización obligatoria global (`forceUpdate = true`).
      */
     suspend fun publishAppVersionToCloud(
         versionCode: Int,
         versionName: String,
         apkDownloadUrl: String,
-        releaseNotes: String
+        releaseNotes: String,
+        forceUpdate: Boolean = false
     ): Result<com.example.util.AppUpdateInfo> {
         val fbUser = auth.currentUser
             ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
@@ -773,6 +778,7 @@ class FirestoreTeamRepository(context: Context) {
                 "latestVersionName" to cleanName,
                 "apkDownloadUrl" to cleanUrl.take(500),
                 "releaseNotes" to cleanNotes,
+                "forceUpdate" to forceUpdate,
                 "updatedByUid" to fbUser.uid,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
@@ -787,7 +793,8 @@ class FirestoreTeamRepository(context: Context) {
                     latestVersionName = cleanName,
                     apkDownloadUrl = cleanUrl,
                     releaseNotes = cleanNotes,
-                    updatedAtMs = System.currentTimeMillis()
+                    updatedAtMs = System.currentTimeMillis(),
+                    forceUpdate = forceUpdate
                 )
             )
         } catch (ce: CancellationException) {
@@ -795,6 +802,37 @@ class FirestoreTeamRepository(context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "publishAppVersionToCloud failed: ${e.message}")
             Result.failure(Exception("No se pudo publicar la actualización: ${e.localizedMessage}"))
+        }
+    }
+
+    /**
+     * Cuando un vendedor abre la versión requerida (o superior), limpia automáticamente el bloqueo
+     * individual `updateRequired` en Firestore si la regla del vendedor activo lo permite.
+     */
+    suspend fun clearOwnUpdateLockIfUpgraded(user: UserAccount): Result<Unit> {
+        val fbUser = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
+        val emailKey = normalizeEmail(user.email)
+        if (emailKey.isBlank()) {
+            return Result.failure(IllegalArgumentException("Usuario sin correo configurado."))
+        }
+        return try {
+            val payload = hashMapOf<String, Any>(
+                "ownerUid" to fbUser.uid.take(128),
+                "updateRequired" to false,
+                "updateLockReason" to "",
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            firestore.collection(COLLECTION_USERS)
+                .document(emailKey)
+                .update(payload)
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("clearOwnUpdateLockIfUpgraded", e)
+            Result.failure(e)
         }
     }
 
@@ -831,6 +869,9 @@ class FirestoreTeamRepository(context: Context) {
         val lastOnlineVerifiedAtMs = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time
             ?: createdAtMs
         val lastTamperAlertAtMs = (data["lastTamperAlertAtMs"] as? Number)?.toLong() ?: 0L
+        val updateRequired = (data["updateRequired"] as? Boolean) ?: false
+        val requiredVersionCode = ((data["requiredVersionCode"] as? Number)?.toInt() ?: 0).coerceIn(0, 100000)
+        val updateLockReason = (data["updateLockReason"] as? String).orEmpty().take(300)
 
         return UserAccount(
             id = id,
@@ -850,7 +891,10 @@ class FirestoreTeamRepository(context: Context) {
             boundDeviceLabelsSerialized = boundDeviceLabels.joinToString("|"),
             ownerUid = ownerUid,
             lastOnlineVerifiedAtMs = lastOnlineVerifiedAtMs,
-            lastTamperAlertAtMs = lastTamperAlertAtMs
+            lastTamperAlertAtMs = lastTamperAlertAtMs,
+            updateRequired = updateRequired,
+            requiredVersionCode = requiredVersionCode,
+            updateLockReason = updateLockReason
         )
     }
 
@@ -873,6 +917,9 @@ class FirestoreTeamRepository(context: Context) {
             "boundDeviceIds" to ids,
             "boundDeviceLabels" to labels,
             "ownerUid" to user.ownerUid.take(128),
+            "updateRequired" to user.updateRequired,
+            "requiredVersionCode" to user.requiredVersionCode.coerceIn(0, 100000),
+            "updateLockReason" to user.updateLockReason.take(300),
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
@@ -892,6 +939,9 @@ class FirestoreTeamRepository(context: Context) {
             "boundDeviceIds" to ids,
             "boundDeviceLabels" to labels,
             "ownerUid" to user.ownerUid.take(128),
+            "updateRequired" to user.updateRequired,
+            "requiredVersionCode" to user.requiredVersionCode.coerceIn(0, 100000),
+            "updateLockReason" to user.updateLockReason.take(300),
             "updatedAt" to FieldValue.serverTimestamp()
         )
     }
@@ -1312,6 +1362,132 @@ class FirestoreTeamRepository(context: Context) {
             completedDemos = (data["completedDemos"] as? Number)?.toInt() ?: 0,
             closedSales = (data["closedSales"] as? Number)?.toInt() ?: 0,
             pendingReplacements = (data["pendingReplacements"] as? Number)?.toInt() ?: 0,
+            updatedAtMs = updatedAtMs
+        )
+    }
+
+    // =====================================================================
+    // REAL-TIME FIREBASE ERROR DIAGNOSTICS (/AppErrors/{errorId})
+    // =====================================================================
+
+    private fun handleFirestoreError(operation: String, error: Throwable?) {
+        if (error == null) return
+        val code = (error as? FirebaseFirestoreException)?.code?.name ?: "UNKNOWN"
+        Log.e(TAG, "Firestore operation '$operation' failed [$code]: ${error.message}")
+    }
+
+    suspend fun flushPendingAppErrors(reporterNameOverride: String = ""): Int {
+        return try {
+            com.example.util.AppErrorLogger.flushPendingErrors(
+                context = appContext,
+                firestore = firestore,
+                auth = auth,
+                reporterNameOverride = reporterNameOverride
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("flushPendingAppErrors", e)
+            0
+        }
+    }
+
+    fun observeAppErrors(): Flow<List<com.example.util.AppErrorReport>> = callbackFlow {
+        val reg: ListenerRegistration = firestore
+            .collection(COLLECTION_APP_ERRORS)
+            .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .limit(50)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    handleFirestoreError("observeAppErrors", error)
+                    return@addSnapshotListener
+                }
+                val list = snap?.documents?.mapNotNull { parseAppErrorReport(it) }.orEmpty()
+                trySend(list)
+            }
+        awaitClose { reg.remove() }
+    }
+
+    suspend fun fetchAppErrorsOnce(): Result<List<com.example.util.AppErrorReport>> {
+        return try {
+            val snap = firestore
+                .collection(COLLECTION_APP_ERRORS)
+                .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(50)
+                .get(Source.SERVER)
+                .await()
+            val list = snap.documents.mapNotNull { parseAppErrorReport(it) }
+            Result.success(list)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("fetchAppErrorsOnce", e)
+            Result.failure(Exception("No se pudieron cargar los errores en la nube: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun markAppErrorStatus(errorId: String, status: String): Result<Unit> {
+        val safeStatus = if (status == "RESOLVED") "RESOLVED" else "OPEN"
+        if (errorId.isBlank()) return Result.failure(IllegalArgumentException("ID de error inválido."))
+        return try {
+            firestore.collection(COLLECTION_APP_ERRORS)
+                .document(errorId)
+                .update(
+                    mapOf(
+                        "status" to safeStatus,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("markAppErrorStatus", e)
+            Result.failure(Exception("No se pudo actualizar el estado del error: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun deleteAppError(errorId: String): Result<Unit> {
+        if (errorId.isBlank()) return Result.failure(IllegalArgumentException("ID de error inválido."))
+        return try {
+            firestore.collection(COLLECTION_APP_ERRORS)
+                .document(errorId)
+                .delete()
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("deleteAppError", e)
+            Result.failure(Exception("No se pudo eliminar el registro de error: ${e.localizedMessage}"))
+        }
+    }
+
+    private fun parseAppErrorReport(doc: DocumentSnapshot): com.example.util.AppErrorReport? {
+        val data = doc.data ?: return null
+        val id = (data["id"] as? String).orEmpty().ifBlank { doc.id }
+        val occurredAtMs = (data["occurredAtMs"] as? Number)?.toLong() ?: 0L
+        val createdAtMs = doc.getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time
+            ?: occurredAtMs
+        val updatedAtMs = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time
+            ?: createdAtMs
+        return com.example.util.AppErrorReport(
+            id = id,
+            ownerUid = (data["ownerUid"] as? String).orEmpty(),
+            reporterEmail = (data["reporterEmail"] as? String).orEmpty(),
+            reporterName = (data["reporterName"] as? String).orEmpty().ifBlank { "Vendedor" },
+            stage = (data["stage"] as? String).orEmpty().ifBlank { "ON_CREATE" },
+            errorMessage = (data["errorMessage"] as? String).orEmpty(),
+            stackTraceExcerpt = (data["stackTraceExcerpt"] as? String).orEmpty(),
+            logcatExcerpt = (data["logcatExcerpt"] as? String).orEmpty(),
+            deviceModel = (data["deviceModel"] as? String).orEmpty(),
+            androidSdk = (data["androidSdk"] as? Number)?.toInt() ?: Build.VERSION.SDK_INT,
+            appVersionName = (data["appVersionName"] as? String).orEmpty(),
+            appVersionCode = (data["appVersionCode"] as? Number)?.toInt() ?: 1,
+            status = (data["status"] as? String).orEmpty().ifBlank { "OPEN" },
+            occurredAtMs = occurredAtMs,
+            createdAtMs = createdAtMs,
             updatedAtMs = updatedAtMs
         )
     }

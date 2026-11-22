@@ -64,4 +64,7 @@ interface UserDao {
 
     @Query("UPDATE users SET canAccessLegacyModules = :allow WHERE id = :userId")
     suspend fun setUserLegacyAccess(userId: String, allow: Boolean)
+
+    @Query("UPDATE users SET updateRequired = :updateRequired, requiredVersionCode = :requiredVersionCode, updateLockReason = :reason WHERE id = :userId")
+    suspend fun setUserUpdateLock(userId: String, updateRequired: Boolean, requiredVersionCode: Int, reason: String)
 }

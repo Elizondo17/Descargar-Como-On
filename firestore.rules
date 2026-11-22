@@ -57,7 +57,8 @@ service cloud.firestore {
                'id', 'email', 'username', 'role', 'daysGranted',
                'validFrom', 'expiresAt', 'isBlocked', 'canAccessLegacyModules',
                'notes', 'maxDevices', 'boundDeviceIds', 'boundDeviceLabels',
-               'ownerUid', 'createdAt', 'updatedAt', 'lastTamperAlertAtMs'
+               'ownerUid', 'createdAt', 'updatedAt', 'lastTamperAlertAtMs',
+               'updateRequired', 'requiredVersionCode', 'updateLockReason'
              ]) &&
              data.id is string && data.id.size() >= 3 && data.id.size() <= 80 &&
              data.email is string && data.email == emailKey &&
@@ -80,7 +81,10 @@ service cloud.firestore {
              data.ownerUid is string && data.ownerUid.size() <= 128 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time &&
-             (!('lastTamperAlertAtMs' in data) || (data.lastTamperAlertAtMs is int && data.lastTamperAlertAtMs >= 0));
+             (!('lastTamperAlertAtMs' in data) || (data.lastTamperAlertAtMs is int && data.lastTamperAlertAtMs >= 0)) &&
+             (!('updateRequired' in data) || data.updateRequired is bool) &&
+             (!('requiredVersionCode' in data) || (data.requiredVersionCode is int && data.requiredVersionCode >= 0 && data.requiredVersionCode <= 100000)) &&
+             (!('updateLockReason' in data) || (data.updateLockReason is string && data.updateLockReason.size() <= 300));
     }
 
     function isValidTeamConfig(data, configId) {
@@ -107,6 +111,7 @@ service cloud.firestore {
              (!('latestVersionName' in data) || (data.latestVersionName is string && data.latestVersionName.size() <= 40)) &&
              (!('apkDownloadUrl' in data) || (data.apkDownloadUrl is string && data.apkDownloadUrl.size() <= 500)) &&
              (!('releaseNotes' in data) || (data.releaseNotes is string && data.releaseNotes.size() <= 1000)) &&
+             (!('forceUpdate' in data) || data.forceUpdate is bool) &&
              (!('payloadJson' in data) || (data.payloadJson is string && data.payloadJson.size() <= 200000));
     }
 
@@ -139,7 +144,15 @@ service cloud.firestore {
                           resource.data.isBlocked == false &&
                           resource.data.expiresAt > request.time &&
                           request.resource.data.diff(resource.data).affectedKeys()
-                            .hasOnly(['boundDeviceIds', 'boundDeviceLabels', 'ownerUid', 'updatedAt', 'lastTamperAlertAtMs']) &&
+                            .hasOnly([
+                              'boundDeviceIds', 'boundDeviceLabels', 'ownerUid',
+                              'updatedAt', 'lastTamperAlertAtMs',
+                              'updateRequired', 'updateLockReason'
+                            ]) &&
+                          (!('updateRequired' in request.resource.data.diff(resource.data).affectedKeys()) ||
+                            request.resource.data.updateRequired == false) &&
+                          (!('updateLockReason' in request.resource.data.diff(resource.data).affectedKeys()) ||
+                            request.resource.data.updateLockReason == '') &&
                           request.resource.data.boundDeviceIds.size() <= resource.data.maxDevices &&
                           request.resource.data.boundDeviceIds.hasAll(resource.data.boundDeviceIds) &&
                           (
@@ -332,6 +345,65 @@ service cloud.firestore {
                        isValidSellerStats(request.resource.data, ownerUid) &&
                        request.resource.data.ownerUid == resource.data.ownerUid;
       allow delete: if isBootstrapAdmin();
+    }
+
+    function isValidErrorId(errorId) {
+      return errorId is string &&
+             errorId.size() >= 3 &&
+             errorId.size() <= 80 &&
+             errorId.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidAppError(data, errorId) {
+      return data.keys().hasAll([
+               'id', 'ownerUid', 'reporterEmail', 'reporterName', 'stage',
+               'errorMessage', 'stackTraceExcerpt', 'logcatExcerpt',
+               'deviceModel', 'androidSdk', 'appVersionName', 'appVersionCode',
+               'status', 'occurredAtMs', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'ownerUid', 'reporterEmail', 'reporterName', 'stage',
+               'errorMessage', 'stackTraceExcerpt', 'logcatExcerpt',
+               'deviceModel', 'androidSdk', 'appVersionName', 'appVersionCode',
+               'status', 'occurredAtMs', 'createdAt', 'updatedAt'
+             ]) &&
+             data.id is string && data.id == errorId &&
+             data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+             data.reporterEmail is string && data.reporterEmail.size() <= 120 &&
+             data.reporterName is string && data.reporterName.size() <= 80 &&
+             data.stage in ['ON_CREATE', 'LOGCAT_FIREBASE'] &&
+             data.errorMessage is string && data.errorMessage.size() >= 1 && data.errorMessage.size() <= 600 &&
+             data.stackTraceExcerpt is string && data.stackTraceExcerpt.size() <= 2500 &&
+             data.logcatExcerpt is string && data.logcatExcerpt.size() <= 3000 &&
+             data.deviceModel is string && data.deviceModel.size() <= 100 &&
+             data.androidSdk is int && data.androidSdk >= 21 && data.androidSdk <= 60 &&
+             data.appVersionName is string && data.appVersionName.size() <= 40 &&
+             data.appVersionCode is int && data.appVersionCode >= 1 && data.appVersionCode <= 100000 &&
+             data.status in ['OPEN', 'RESOLVED'] &&
+             data.occurredAtMs is int && data.occurredAtMs >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /AppErrors/{errorId} {
+      allow get: if isValidErrorId(errorId) &&
+                    (isSuperuser() || (isSignedIn() && resource.data.ownerUid == request.auth.uid));
+      // Only bootstrap admin lists AppErrors so allow list stays free of get()/exists() calls
+      allow list: if isBootstrapAdmin();
+      allow create: if isValidErrorId(errorId) &&
+                       isSignedIn() &&
+                       isValidAppError(request.resource.data, errorId) &&
+                       request.resource.data.ownerUid == request.auth.uid &&
+                       request.resource.data.status == 'OPEN';
+      allow update: if isValidErrorId(errorId) &&
+                       isSuperuser() &&
+                       isValidAppError(request.resource.data, errorId) &&
+                       request.resource.data.id == resource.data.id &&
+                       request.resource.data.ownerUid == resource.data.ownerUid &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.occurredAtMs == resource.data.occurredAtMs &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isValidErrorId(errorId) && isSuperuser();
     }
   }
 }

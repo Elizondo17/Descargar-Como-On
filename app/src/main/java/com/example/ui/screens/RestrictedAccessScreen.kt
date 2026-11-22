@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -87,6 +88,10 @@ fun RestrictedAccessScreen(
     lastOnlineVerifiedAtMs: Long = user.lastOnlineVerifiedAtMs,
     isNetworkOnline: Boolean = true,
     feedbackMessage: String? = null,
+    updateLockReasonText: String = "",
+    requiredVersionCode: Int = user.requiredVersionCode,
+    apkDownloadUrl: String = "",
+    onDownloadUpdateApk: (() -> Unit)? = null,
     onRefresh: () -> Unit,
     onContactSuperuser: () -> Unit,
     onLogout: () -> Unit,
@@ -107,12 +112,14 @@ fun RestrictedAccessScreen(
     }
 
     val accentColor = when (effectiveReason) {
+        AccessLockReason.UPDATE_REQUIRED -> PsaCyanGlow
         AccessLockReason.OFFLINE_OVER_24H,
         AccessLockReason.REBOOT_VERIFICATION_REQUIRED -> AmberDelay
         else -> RoseError
     }
 
     val headerIcon = when (effectiveReason) {
+        AccessLockReason.UPDATE_REQUIRED -> Icons.Default.SystemUpdate
         AccessLockReason.DAYS_EXPIRED -> Icons.Default.EventBusy
         AccessLockReason.OFFLINE_OVER_24H -> Icons.Default.WifiOff
         AccessLockReason.REBOOT_VERIFICATION_REQUIRED -> Icons.Default.Refresh
@@ -121,6 +128,7 @@ fun RestrictedAccessScreen(
     }
 
     val titleText = when (effectiveReason) {
+        AccessLockReason.UPDATE_REQUIRED -> "ACTUALIZACIÓN REQUERIDA"
         AccessLockReason.DAYS_EXPIRED -> "SE ACABARON TUS DÍAS DE USO"
         AccessLockReason.OFFLINE_OVER_24H -> "CONEXIÓN REQUERIDA"
         AccessLockReason.REBOOT_VERIFICATION_REQUIRED -> "VERIFICACIÓN INICIAL REQUERIDA"
@@ -129,6 +137,9 @@ fun RestrictedAccessScreen(
     }
 
     val bodyText = when (effectiveReason) {
+        AccessLockReason.UPDATE_REQUIRED ->
+            updateLockReasonText.takeIf { it.isNotBlank() }
+                ?: "Tu acceso se encuentra pausado temporalmente hasta que descargues e instales la nueva versión de Como On. Al abrir la app actualizada (o si el Administrador la habilita), tu cuenta se reactivará automáticamente."
         AccessLockReason.DAYS_EXPIRED ->
             "Se acabaron los días de uso habilitados para tu cuenta. Contacta al Administrador para habilitar más días y continuar utilizando la aplicación."
         AccessLockReason.OFFLINE_OVER_24H ->
@@ -142,6 +153,7 @@ fun RestrictedAccessScreen(
     }
 
     val statusLabel = when (effectiveReason) {
+        AccessLockReason.UPDATE_REQUIRED -> if (requiredVersionCode > 0) "Requiere Comp. >= $requiredVersionCode" else "Actualización pendiente"
         AccessLockReason.DAYS_EXPIRED -> "Días de uso agotados"
         AccessLockReason.OFFLINE_OVER_24H -> if (isNetworkOnline) "Listo para validar con red" else "Sin conexión (+24 hs)"
         AccessLockReason.REBOOT_VERIFICATION_REQUIRED -> if (isNetworkOnline) "Validación pendiente" else "Sin conexión a internet"
@@ -351,7 +363,90 @@ fun RestrictedAccessScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            if (effectiveReason == AccessLockReason.DAYS_EXPIRED) {
+            if (effectiveReason == AccessLockReason.UPDATE_REQUIRED) {
+                if (onDownloadUpdateApk != null && apkDownloadUrl.isNotBlank()) {
+                    Button(
+                        onClick = onDownloadUpdateApk,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("restricted_download_update_apk_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = "Descargar nueva versión APK",
+                            tint = Color.Black,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Descargar Nueva Versión (APK)",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.5.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
+                Button(
+                    onClick = {
+                        isChecking = true
+                        onRefresh()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("verify_cloud_status_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
+                    enabled = !isChecking
+                ) {
+                    if (isChecking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Verificando actualización...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Ya actualicé / Verificar",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Ya actualicé / Verificar", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedButton(
+                    onClick = onContactSuperuser,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("contact_superuser_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PurpleNeon),
+                    border = BorderStroke(1.dp, PurpleNeon.copy(alpha = 0.6f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Chat,
+                        contentDescription = "Contactar",
+                        tint = PurpleNeon,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Contactar al Administrador", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                }
+            } else if (effectiveReason == AccessLockReason.DAYS_EXPIRED) {
                 Button(
                     onClick = onContactSuperuser,
                     modifier = Modifier

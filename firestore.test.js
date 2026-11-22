@@ -405,8 +405,9 @@ test("app_version allows superuser writes with valid versionCode and signed-in r
     configType: "app_version",
     latestVersionCode: 3,
     latestVersionName: "1.2",
-    apkDownloadUrl: "https://github.com/leonelizondo16/como-on-psa/releases/latest/download/ComoOn-PSA.apk",
+    apkDownloadUrl: "https://github.com/Elizondo17/Descargar-Como-On/releases/latest/download/ComoOn-PSA.apk",
     releaseNotes: "Nuevas mejoras y precios actualizados.",
+    forceUpdate: false,
     updatedByUid: "uid-admin",
     updatedAt: pastDate(500),
   };
@@ -427,10 +428,156 @@ test("app_version allows superuser writes with valid versionCode and signed-in r
     })
   );
 
-  // Admin can publish valid app_version
+  // Admin can publish valid app_version (optional first, then global mandatory)
   await assertSucceeds(adminDb.collection("team_config").doc("app_version").set(validAppVersion));
+  await assertSucceeds(
+    adminDb.collection("team_config").doc("app_version").update({
+      forceUpdate: true,
+      updatedAt: pastDate(200),
+    })
+  );
 
   // Signed-in user can read app_version; unauthenticated user cannot
   await assertSucceeds(sellerDb.collection("team_config").doc("app_version").get());
   await assertFails(unauthDb.collection("team_config").doc("app_version").get());
+});
+
+test("Superuser can enforce per-seller updateRequired lock; seller can only clear own updateRequired on upgrade", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("authorized_users").doc(OP_EMAIL).set(buildUserDoc());
+  });
+
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", {
+      email: ADMIN_EMAIL,
+      email_verified: true,
+    })
+    .firestore();
+  const sellerDb = testEnv
+    .authenticatedContext("uid-seller-1", {
+      email: OP_EMAIL,
+      email_verified: true,
+    })
+    .firestore();
+
+  // Admin sets per-user updateRequired lock + requiredVersionCode
+  await assertSucceeds(
+    adminDb.collection("authorized_users").doc(OP_EMAIL).update({
+      updateRequired: true,
+      requiredVersionCode: 5,
+      updateLockReason: "Actualiza a v1.4 para continuar.",
+      updatedAt: pastDate(400),
+    })
+  );
+
+  // Seller cannot modify requiredVersionCode or isBlocked
+  await assertFails(
+    sellerDb.collection("authorized_users").doc(OP_EMAIL).update({
+      ownerUid: "uid-seller-1",
+      requiredVersionCode: 1,
+      updatedAt: pastDate(300),
+    })
+  );
+
+  // Active non-blocked seller can clear own updateRequired = false when opening upgraded APK
+  await assertSucceeds(
+    sellerDb.collection("authorized_users").doc(OP_EMAIL).update({
+      ownerUid: "uid-seller-1",
+      updateRequired: false,
+      updateLockReason: "",
+      updatedAt: pastDate(200),
+    })
+  );
+
+  // Seller CANNOT self-lock by setting updateRequired = true
+  await assertFails(
+    sellerDb.collection("authorized_users").doc(OP_EMAIL).update({
+      updateRequired: true,
+      updatedAt: pastDate(100),
+    })
+  );
+});
+
+test("AppErrors enforces authenticated owner create and superuser-only listing, resolution, and deletion", async () => {
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const seller1Db = testEnv
+    .authenticatedContext("uid-seller-1", {
+      email: OP_EMAIL,
+      email_verified: true,
+    })
+    .firestore();
+  const seller2Db = testEnv
+    .authenticatedContext("uid-seller-2", {
+      email: "vendedor2@gmail.com",
+      email_verified: true,
+    })
+    .firestore();
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", {
+      email: ADMIN_EMAIL,
+      email_verified: true,
+    })
+    .firestore();
+
+  const errDoc = {
+    id: "err_init_001",
+    ownerUid: "uid-seller-1",
+    reporterEmail: OP_EMAIL,
+    reporterName: "Carlos Ventas",
+    stage: "ON_CREATE",
+    errorMessage: "Default FirebaseApp is not initialized",
+    stackTraceExcerpt: "java.lang.IllegalStateException: Default FirebaseApp is not initialized",
+    logcatExcerpt: "E/FirebaseApp: Failed to initialize",
+    deviceModel: "Samsung SM-A546E",
+    androidSdk: 34,
+    appVersionName: "1.2",
+    appVersionCode: 3,
+    status: "OPEN",
+    occurredAtMs: Date.now() - 1000,
+    createdAt: pastDate(500),
+    updatedAt: pastDate(500),
+  };
+
+  // Unauthenticated fails
+  await assertFails(unauthDb.collection("AppErrors").doc("err_init_001").set(errDoc));
+
+  // Forged ownerUid fails
+  await assertFails(
+    seller2Db.collection("AppErrors").doc("err_init_001").set(errDoc)
+  );
+
+  // Pre-resolved status on create fails
+  await assertFails(
+    seller1Db.collection("AppErrors").doc("err_init_002").set({
+      ...errDoc,
+      id: "err_init_002",
+      status: "RESOLVED",
+    })
+  );
+
+  // Valid seller error creation succeeds
+  await assertSucceeds(
+    seller1Db.collection("AppErrors").doc("err_init_001").set(errDoc)
+  );
+
+  // Sellers cannot list AppErrors or read/resolve/delete another user's error
+  await assertFails(seller1Db.collection("AppErrors").get());
+  await assertFails(seller2Db.collection("AppErrors").doc("err_init_001").get());
+  await assertFails(
+    seller1Db.collection("AppErrors").doc("err_init_001").update({
+      status: "RESOLVED",
+      updatedAt: pastDate(100),
+    })
+  );
+  await assertFails(seller1Db.collection("AppErrors").doc("err_init_001").delete());
+
+  // Bootstrap Admin can list, mark RESOLVED, and delete
+  await assertSucceeds(adminDb.collection("AppErrors").get());
+  await assertSucceeds(
+    adminDb.collection("AppErrors").doc("err_init_001").update({
+      status: "RESOLVED",
+      updatedAt: pastDate(100),
+    })
+  );
+  await assertSucceeds(adminDb.collection("AppErrors").doc("err_init_001").delete());
 });

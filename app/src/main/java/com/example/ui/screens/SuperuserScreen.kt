@@ -65,6 +65,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
@@ -165,6 +166,10 @@ fun SuperuserScreen(
     val serverAppUpdateInfo by viewModel.serverAppUpdateInfo.collectAsState()
     val isCheckingAppUpdate by viewModel.isCheckingAppUpdate.collectAsState()
     val isAppDistributionSignedIn by viewModel.isAppDistributionTesterSignedIn.collectAsState()
+    val appErrors by viewModel.appErrors.collectAsState()
+    val isLoadingAppErrors by viewModel.isLoadingAppErrors.collectAsState()
+    val pendingLocalErrorCount by viewModel.pendingLocalErrorCount.collectAsState()
+    val appErrorsFeedback by viewModel.appErrorsFeedback.collectAsState()
     val businessProfile by viewModel.businessProfile.collectAsState()
     val allScannedChats by viewModel.allScannedChats.collectAsState()
     val isGlobalLegacyEnabled by viewModel.isGlobalLegacyEnabled.collectAsState()
@@ -194,8 +199,19 @@ fun SuperuserScreen(
     var publishReleaseNotesInput by remember(serverAppUpdateInfo) {
         mutableStateOf(serverAppUpdateInfo?.releaseNotes.orEmpty())
     }
+    var publishForceUpdate by remember(serverAppUpdateInfo) {
+        mutableStateOf(serverAppUpdateInfo?.forceUpdate ?: false)
+    }
     var isPreparingApkShare by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+
+    androidx.compose.runtime.LaunchedEffect(appErrorsFeedback) {
+        val msg = appErrorsFeedback
+        if (!msg.isNullOrBlank()) {
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            viewModel.clearAppErrorsFeedback()
+        }
+    }
 
     fun launchDirectApkFileShare() {
         if (isPreparingApkShare) return
@@ -1434,6 +1450,47 @@ fun SuperuserScreen(
                                                 .fillMaxWidth()
                                                 .testTag("admin_publish_release_notes_input")
                                         )
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (publishForceUpdate) RoseError.copy(alpha = 0.14f) else EmeraldSuccess.copy(alpha = 0.12f))
+                                                .border(
+                                                    1.dp,
+                                                    if (publishForceUpdate) RoseError.copy(alpha = 0.45f) else EmeraldSuccess.copy(alpha = 0.4f),
+                                                    RoundedCornerShape(8.dp)
+                                                )
+                                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = if (publishForceUpdate) {
+                                                        "🔒 Bloqueo Global Obligatorio"
+                                                    } else {
+                                                        "📢 1° Aviso Opcional (Recomendado)"
+                                                    },
+                                                    color = if (publishForceUpdate) RoseError else EmeraldSuccess,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 11.5.sp
+                                                )
+                                                Text(
+                                                    text = if (publishForceUpdate) {
+                                                        "Exige actualizar a la nueva APK a todos los vendedores."
+                                                    } else {
+                                                        "Muestra el aviso con el enlace APK y permite 'Más tarde'."
+                                                    },
+                                                    color = TextSecondary,
+                                                    fontSize = 10.sp
+                                                )
+                                            }
+                                            Switch(
+                                                checked = publishForceUpdate,
+                                                onCheckedChange = { publishForceUpdate = it },
+                                                modifier = Modifier.testTag("admin_switch_publish_force_update")
+                                            )
+                                        }
                                         Button(
                                             onClick = {
                                                 val parsedCode = publishVersionCodeInput.trim().toIntOrNull() ?: 0
@@ -1442,11 +1499,14 @@ fun SuperuserScreen(
                                                     versionCode = parsedCode,
                                                     versionName = publishVersionNameInput,
                                                     apkDownloadUrl = targetUrl,
-                                                    releaseNotes = publishReleaseNotesInput
+                                                    releaseNotes = publishReleaseNotesInput,
+                                                    forceUpdate = publishForceUpdate
                                                 )
                                             },
                                             enabled = !isCheckingAppUpdate,
-                                            colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (publishForceUpdate) RoseError else IndigoPrimary
+                                            ),
                                             shape = RoundedCornerShape(10.dp),
                                             modifier = Modifier
                                                 .fillMaxWidth()
@@ -1454,7 +1514,11 @@ fun SuperuserScreen(
                                                 .testTag("admin_btn_publish_app_version")
                                         ) {
                                             Text(
-                                                text = if (isCheckingAppUpdate) "Publicando..." else "Publicar Versión en la Nube",
+                                                text = when {
+                                                    isCheckingAppUpdate -> "Publicando..."
+                                                    publishForceUpdate -> "Publicar Versión + Exigir Actualización"
+                                                    else -> "Publicar Aviso de Versión en la Nube"
+                                                },
                                                 color = Color.White,
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 12.sp
@@ -1595,6 +1659,20 @@ fun SuperuserScreen(
                 }
             }
 
+            // Real-time Firebase Error Monitoring Panel (AppErrors)
+            item {
+                com.example.ui.components.AppErrorsMonitorCard(
+                    appErrors = appErrors,
+                    isLoading = isLoadingAppErrors,
+                    pendingLocalCount = pendingLocalErrorCount,
+                    onRefresh = { viewModel.refreshAppErrorsFromCloud() },
+                    onFlushLocal = { viewModel.flushPendingAppErrorsNow(manualFeedback = true) },
+                    onSendTestReport = { viewModel.sendDiagnosticTestAppError() },
+                    onToggleResolve = { errorId, resolved -> viewModel.resolveAppError(errorId, resolved) },
+                    onDeleteError = { errorId -> viewModel.deleteAppError(errorId) }
+                )
+            }
+
             // List of secondary users
             item {
                 Text(
@@ -1663,6 +1741,7 @@ fun SuperuserScreen(
                                         .background(
                                             when {
                                                 isBlocked -> RoseError.copy(alpha = 0.2f)
+                                                user.updateRequired -> com.example.ui.theme.PsaCyanGlow.copy(alpha = 0.2f)
                                                 isExpired -> RoseError.copy(alpha = 0.2f)
                                                 user.remainingDays <= 2 -> AmberDelay.copy(alpha = 0.2f)
                                                 else -> EmeraldSuccess.copy(alpha = 0.2f)
@@ -1673,11 +1752,13 @@ fun SuperuserScreen(
                                     Text(
                                         text = when {
                                             isBlocked -> "BLOQUEADO"
+                                            user.updateRequired -> "ACTUALIZAR"
                                             isExpired -> "EXPIRADO"
                                             else -> "${user.remainingDays}D RESTANTES"
                                         },
                                         color = when {
                                             isBlocked || isExpired -> RoseError
+                                            user.updateRequired -> com.example.ui.theme.PsaCyanGlow
                                             user.remainingDays <= 2 -> AmberDelay
                                             else -> EmeraldSuccess
                                         },
@@ -1811,6 +1892,87 @@ fun SuperuserScreen(
                                         uncheckedTrackColor = Color(0xFF031E2C)
                                     )
                                 )
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Temporary Update-Required Lock Control (Auto-unlocks on new APK OR Manual Admin Re-enable)
+                            val targetReqCode = serverAppUpdateInfo?.latestVersionCode
+                                ?.takeIf { it > 0 }
+                                ?: (com.example.BuildConfig.VERSION_CODE + 1)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (user.updateRequired) AmberDelay.copy(alpha = 0.14f)
+                                        else SlateBackground.copy(alpha = 0.7f)
+                                    )
+                                    .border(
+                                        1.dp,
+                                        if (user.updateRequired) AmberDelay.copy(alpha = 0.55f) else SlateCardBorder,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.SystemUpdate,
+                                            contentDescription = "Estado de actualización requerida",
+                                            tint = if (user.updateRequired) AmberDelay else com.example.ui.theme.PsaCyanGlow,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (user.updateRequired) {
+                                                "📲 Bloqueado hasta actualizar (Comp. >= ${user.requiredVersionCode})"
+                                            } else {
+                                                "📲 Exigir Actualización de App"
+                                            },
+                                            color = if (user.updateRequired) AmberDelay else TextPrimary,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Text(
+                                        text = if (user.updateRequired) {
+                                            "Se habilitará solo al abrir la versión nueva o si lo habilitas aquí."
+                                        } else {
+                                            "Pausa temporalmente al vendedor con el link de descarga."
+                                        },
+                                        color = TextSecondary,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.toggleUserUpdateLock(
+                                            user = user,
+                                            requireUpdate = !user.updateRequired,
+                                            requiredVersionCode = targetReqCode
+                                        )
+                                    },
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        1.dp,
+                                        if (user.updateRequired) EmeraldSuccess.copy(alpha = 0.7f) else AmberDelay.copy(alpha = 0.7f)
+                                    ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("admin_btn_toggle_update_lock_${user.id}")
+                                ) {
+                                    Text(
+                                        text = if (user.updateRequired) "Habilitar" else "Exigir Update",
+                                        color = if (user.updateRequired) EmeraldSuccess else AmberDelay,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))

@@ -40,6 +40,9 @@ import com.example.data.model.calculateNextReplacementTimestamp
 import com.example.BuildConfig
 import com.example.util.AccessLockReason
 import com.example.util.AdminPricingSyncDecision
+import com.example.util.AppErrorLogger
+import com.example.util.AppErrorReport
+import com.example.util.AppErrorStage
 import com.example.util.AppUpdateChecker
 import com.example.util.AppUpdateInfo
 import com.example.util.FirebaseAppDistributionHelper
@@ -49,6 +52,7 @@ import com.example.util.LicenseSecurityGuard
 import com.example.util.PsaCountryPricingSnapshot
 import com.example.util.PsaPricingCloudSyncHelper
 import com.example.util.PsaScheduleManager
+import com.example.util.UpdateLockEvaluation
 import com.example.data.repository.CloudAuthOutcome
 import com.example.data.repository.CloudSyncRepository
 import com.example.service.GeminiSalesService
@@ -132,6 +136,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     val isAppDistributionTesterSignedIn: StateFlow<Boolean> = _isAppDistributionTesterSignedIn.asStateFlow()
 
+    private val _updateLockEvaluation = MutableStateFlow(
+        UpdateLockEvaluation(
+            isLocked = false,
+            requiredVersionCode = 0,
+            reasonText = "",
+            shouldAutoClearUserFlag = false
+        )
+    )
+    val updateLockEvaluation: StateFlow<UpdateLockEvaluation> = _updateLockEvaluation.asStateFlow()
+
+    private val _appErrors = MutableStateFlow<List<AppErrorReport>>(emptyList())
+    val appErrors: StateFlow<List<AppErrorReport>> = _appErrors.asStateFlow()
+
+    private val _isLoadingAppErrors = MutableStateFlow(false)
+    val isLoadingAppErrors: StateFlow<Boolean> = _isLoadingAppErrors.asStateFlow()
+
+    private val _pendingLocalErrorCount = MutableStateFlow(
+        AppErrorLogger.getPendingCount(application)
+    )
+    val pendingLocalErrorCount: StateFlow<Int> = _pendingLocalErrorCount.asStateFlow()
+
+    private val _appErrorsFeedback = MutableStateFlow<String?>(null)
+    val appErrorsFeedback: StateFlow<String?> = _appErrorsFeedback.asStateFlow()
+
     private var userListenerJob: Job? = null
     private var allUsersListenerJob: Job? = null
     private var roleMatrixListenerJob: Job? = null
@@ -142,10 +170,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var visitsSyncJob: Job? = null
     private var postSaleSyncJob: Job? = null
     private var sellerStatsListenerJob: Job? = null
+    private var appErrorsListenerJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var wasAutoPausedByLicenseLock: Boolean = false
     private var hasCheckedAppUpdateOnLaunch: Boolean = false
     private var dismissedUpdateVersionCode: Int = 0
+    private var isAutoClearingUpdateLock: Boolean = false
 
     val currentUser: StateFlow<UserAccount?> = repository.currentUser
     val allUsers: StateFlow<List<UserAccount>> = repository.allUsers
@@ -488,6 +518,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 evaluateLicenseNow()
                 if (currentUser.value != null) {
                     recheckCloudAccessNow(silentIfNotLocked = true)
+                    flushPendingAppErrorsNow(manualFeedback = false)
                 }
             },
             onNetworkLost = {
@@ -536,8 +567,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun evaluateLicenseNow(user: UserAccount? = currentUser.value): LicenseEvaluationResult {
         val eval = LicenseSecurityGuard.evaluateAccess(getApplication(), user)
         _licenseEvaluation.value = eval
-        enforceLockSideEffects(eval)
+        val updateEval = AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = BuildConfig.VERSION_CODE,
+            user = user,
+            serverInfo = _serverAppUpdateInfo.value
+        )
+        _updateLockEvaluation.value = updateEval
+        maybeAutoClearUpgradedSellerLock(user, updateEval)
+        enforceLockSideEffects(eval, updateEval)
         return eval
+    }
+
+    private fun refreshUpdateLockEvaluation(
+        user: UserAccount? = currentUser.value,
+        serverInfo: AppUpdateInfo? = _serverAppUpdateInfo.value
+    ) {
+        val updateEval = AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = BuildConfig.VERSION_CODE,
+            user = user,
+            serverInfo = serverInfo
+        )
+        _updateLockEvaluation.value = updateEval
+        maybeAutoClearUpgradedSellerLock(user, updateEval)
+        enforceLockSideEffects(_licenseEvaluation.value, updateEval)
+    }
+
+    private fun maybeAutoClearUpgradedSellerLock(
+        user: UserAccount?,
+        updateEval: UpdateLockEvaluation
+    ) {
+        if (!updateEval.shouldAutoClearUserFlag || user == null) return
+        if (isAutoClearingUpdateLock) return
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        isAutoClearingUpdateLock = true
+        viewModelScope.launch {
+            try {
+                repository.setUserUpdateLock(
+                    userId = user.id,
+                    updateRequired = false,
+                    requiredVersionCode = user.requiredVersionCode,
+                    reason = "",
+                    syncToCloud = false
+                )
+                if (_isNetworkOnline.value && cloudRepo.getCurrentFirebaseUser() != null) {
+                    cloudRepo.clearOwnUpdateLockIfUpgraded(user)
+                }
+            } finally {
+                isAutoClearingUpdateLock = false
+            }
+        }
     }
 
     private fun shutdownBackgroundServicesOnLock() {
@@ -548,9 +626,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         wasAutoPausedByLicenseLock = true
     }
 
-    private fun enforceLockSideEffects(eval: LicenseEvaluationResult) {
+    private fun enforceLockSideEffects(
+        eval: LicenseEvaluationResult,
+        updateEval: UpdateLockEvaluation = _updateLockEvaluation.value
+    ) {
         val ctx = getApplication<Application>()
-        if (eval.isLocked) {
+        if (eval.isLocked || updateEval.isLocked) {
             shutdownBackgroundServicesOnLock()
         } else if (wasAutoPausedByLicenseLock) {
             EzoAccessibilityService.setAppPaused(ctx, false)
@@ -561,11 +642,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onAppForegrounded(activityContext: Context? = null) {
         val online = LicenseSecurityGuard.hasInternetConnectivity(getApplication())
         _isNetworkOnline.value = online
+        _pendingLocalErrorCount.value = AppErrorLogger.getPendingCount(getApplication())
         evaluateLicenseNow()
         val user = currentUser.value
         if (user != null) {
             if (online) {
                 recheckCloudAccessNow(silentIfNotLocked = true)
+                flushPendingAppErrorsNow(manualFeedback = false)
                 if (!hasCheckedAppUpdateOnLaunch) {
                     checkForAppUpdate(isAutomaticStartup = true)
                 }
@@ -597,6 +680,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val serverInfo = cloudRepo.fetchAppVersionFromServer()
                 _serverAppUpdateInfo.value = serverInfo
+                refreshUpdateLockEvaluation(currentUser.value, serverInfo)
                 val updateReady = AppUpdateChecker.isUpdateAvailable(
                     currentVersionCode = BuildConfig.VERSION_CODE,
                     serverInfo = serverInfo,
@@ -683,7 +767,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         versionCode: Int,
         versionName: String,
         apkDownloadUrl: String,
-        releaseNotes: String
+        releaseNotes: String,
+        forceUpdate: Boolean = false
     ) {
         val cloudRepo = repository.cloudTeamRepository ?: return
         viewModelScope.launch {
@@ -693,17 +778,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     versionCode = versionCode,
                     versionName = versionName,
                     apkDownloadUrl = apkDownloadUrl,
-                    releaseNotes = releaseNotes
+                    releaseNotes = releaseNotes,
+                    forceUpdate = forceUpdate
                 )
                 result.onSuccess { published ->
                     _serverAppUpdateInfo.value = published
-                    _appUpdateCheckFeedback.value =
-                        "✅ Versión v${published.latestVersionName} (Comp. ${published.latestVersionCode}) publicada en el servidor."
+                    refreshUpdateLockEvaluation(currentUser.value, published)
+                    _appUpdateCheckFeedback.value = if (published.forceUpdate) {
+                        "🔒 Versión v${published.latestVersionName} (Comp. ${published.latestVersionCode}) publicada con ACTUALIZACIÓN OBLIGATORIA global."
+                    } else {
+                        "📢 Aviso opcional v${published.latestVersionName} (Comp. ${published.latestVersionCode}) publicado para el equipo."
+                    }
                 }.onFailure { err ->
                     _appUpdateCheckFeedback.value = err.message ?: "No se pudo publicar la actualización."
                 }
             } finally {
                 _isCheckingAppUpdate.value = false
+            }
+        }
+    }
+
+    fun toggleUserUpdateLock(
+        user: UserAccount,
+        requireUpdate: Boolean,
+        requiredVersionCode: Int = _serverAppUpdateInfo.value?.latestVersionCode ?: (BuildConfig.VERSION_CODE + 1),
+        reason: String = ""
+    ) {
+        val targetVersionCode = if (requireUpdate) {
+            requiredVersionCode.coerceAtLeast(BuildConfig.VERSION_CODE)
+        } else {
+            user.requiredVersionCode
+        }
+        val finalReason = if (requireUpdate) {
+            reason.trim().ifBlank {
+                "Tu cuenta requiere actualizar Como On a la compilación $targetVersionCode. Una vez instalada, se habilitará automáticamente."
+            }
+        } else {
+            ""
+        }
+        viewModelScope.launch {
+            repository.setUserUpdateLock(
+                userId = user.id,
+                updateRequired = requireUpdate,
+                requiredVersionCode = targetVersionCode,
+                reason = finalReason,
+                syncToCloud = true
+            )
+            _appUpdateCheckFeedback.value = if (requireUpdate) {
+                "📲 Bloqueo temporal por actualización activado para ${user.username} (Comp. >= $targetVersionCode)."
+            } else {
+                "✅ ${user.username} fue habilitado manualmente por el Administrador."
             }
         }
     }
@@ -892,6 +1016,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 displayName = firebaseUser.displayName.orEmpty(),
                 pendingTamperAlertMs = pendingTamper
             )
+            val refreshedServerVersion = cloudRepo.fetchAppVersionFromServer()
+            if (refreshedServerVersion != null) {
+                _serverAppUpdateInfo.value = refreshedServerVersion
+            }
             applyCloudAuthOutcome(outcome, silentError = silentIfNotLocked)
         }
     }
@@ -916,6 +1044,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 repository.setCurrentUser(outcome.user)
                 evaluateLicenseNow(outcome.user)
                 startCloudTeamListeners(outcome.user)
+                flushPendingAppErrorsNow(manualFeedback = false)
                 checkForAppUpdate(isAutomaticStartup = true)
                 onAuthorized?.invoke()
             }
@@ -936,6 +1065,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 repository.setCurrentUser(outcome.user)
                 evaluateLicenseNow(outcome.user)
                 startCloudTeamListeners(outcome.user)
+                flushPendingAppErrorsNow(manualFeedback = false)
                 checkForAppUpdate(isAutomaticStartup = true)
             }
             is CloudAuthOutcome.NotAuthorized -> {
@@ -1028,6 +1158,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         allUsersListenerJob?.cancel()
         sellerStatsListenerJob?.cancel()
+        appErrorsListenerJob?.cancel()
         if (signedUser.role == "SUPERUSER") {
             allUsersListenerJob = viewModelScope.launch {
                 cloudRepo.observeAllAuthorizedUsers().collect { users ->
@@ -1039,8 +1170,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _sellerPerformanceBoard.value = stats
                 }
             }
+            appErrorsListenerJob = viewModelScope.launch {
+                cloudRepo.observeAppErrors().collect { errors ->
+                    _appErrors.value = errors
+                }
+            }
         } else {
             _sellerPerformanceBoard.value = emptyList()
+            _appErrors.value = emptyList()
         }
 
         workspaceBootstrapJob?.cancel()
@@ -1089,6 +1226,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         visitsSyncJob?.cancel()
         postSaleSyncJob?.cancel()
         sellerStatsListenerJob?.cancel()
+        appErrorsListenerJob?.cancel()
         userListenerJob = null
         allUsersListenerJob = null
         roleMatrixListenerJob = null
@@ -1098,6 +1236,92 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         visitsSyncJob = null
         postSaleSyncJob = null
         sellerStatsListenerJob = null
+        appErrorsListenerJob = null
+    }
+
+    fun flushPendingAppErrorsNow(manualFeedback: Boolean = false) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        val reporterName = currentUser.value?.username.orEmpty()
+        viewModelScope.launch {
+            val uploaded = if (_isNetworkOnline.value && cloudRepo.getCurrentFirebaseUser() != null) {
+                cloudRepo.flushPendingAppErrors(reporterName)
+            } else {
+                0
+            }
+            val remaining = AppErrorLogger.getPendingCount(getApplication())
+            _pendingLocalErrorCount.value = remaining
+            if (manualFeedback) {
+                _appErrorsFeedback.value = when {
+                    uploaded > 0 -> "✅ $uploaded reporte(s) enviados a AppErrors en tiempo real."
+                    remaining > 0 -> "⏳ Quedan $remaining reporte(s) en cola local esperando red o sesión Google."
+                    else -> "✅ Sin errores pendientes en la cola local del dispositivo."
+                }
+            }
+        }
+    }
+
+    fun refreshAppErrorsFromCloud() {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        viewModelScope.launch {
+            _isLoadingAppErrors.value = true
+            try {
+                flushPendingAppErrorsNow(manualFeedback = false)
+                cloudRepo.fetchAppErrorsOnce()
+                    .onSuccess { list ->
+                        _appErrors.value = list
+                        _appErrorsFeedback.value = "🩺 Monitor actualizado (${list.size} registro(s))."
+                    }
+                    .onFailure { err ->
+                        _appErrorsFeedback.value = err.message ?: "No se pudieron consultar los errores."
+                    }
+            } finally {
+                _isLoadingAppErrors.value = false
+            }
+        }
+    }
+
+    fun resolveAppError(errorId: String, resolved: Boolean) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        viewModelScope.launch {
+            val status = if (resolved) "RESOLVED" else "OPEN"
+            cloudRepo.markAppErrorStatus(errorId, status)
+                .onSuccess {
+                    _appErrorsFeedback.value = if (resolved) "✅ Error marcado como resuelto." else "🔄 Error reabierto."
+                }
+                .onFailure { err ->
+                    _appErrorsFeedback.value = err.message ?: "No se pudo actualizar el estado."
+                }
+        }
+    }
+
+    fun deleteAppError(errorId: String) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        viewModelScope.launch {
+            cloudRepo.deleteAppError(errorId)
+                .onSuccess {
+                    _appErrorsFeedback.value = "🗑️ Registro eliminado de AppErrors."
+                }
+                .onFailure { err ->
+                    _appErrorsFeedback.value = err.message ?: "No se pudo eliminar el registro."
+                }
+        }
+    }
+
+    fun sendDiagnosticTestAppError() {
+        val ctx = getApplication<Application>()
+        AppErrorLogger.enqueuePendingError(
+            context = ctx,
+            stage = AppErrorStage.ON_CREATE,
+            errorMessage = "Diagnóstico de prueba Firebase (simulación segura de Superusuario)",
+            stackTraceExcerpt = "DiagnosticTest: Pipeline AppErrors verificado en v${BuildConfig.VERSION_NAME}",
+            logcatExcerpt = "E/FirebaseApp: [TEST] Verificación en tiempo real de monitor AppErrors"
+        )
+        _pendingLocalErrorCount.value = AppErrorLogger.getPendingCount(ctx)
+        flushPendingAppErrorsNow(manualFeedback = true)
+    }
+
+    fun clearAppErrorsFeedback() {
+        _appErrorsFeedback.value = null
     }
 
     fun refreshSellerPerformanceBoard() {
@@ -1133,6 +1357,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopCloudTeamListeners()
         _isCloudGoogleConnected.value = false
         _sellerPerformanceBoard.value = emptyList()
+        _appErrors.value = emptyList()
+        _updateLockEvaluation.value = UpdateLockEvaluation(false, 0, "", false)
         viewModelScope.launch {
             repository.cloudTeamRepository?.signOutGoogle()
         }

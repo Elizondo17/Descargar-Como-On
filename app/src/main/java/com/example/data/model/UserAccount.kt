@@ -26,7 +26,10 @@ data class UserAccount(
     val boundDeviceLabelsSerialized: String = "",
     val ownerUid: String = "",
     val lastOnlineVerifiedAtMs: Long = 0L,
-    val lastTamperAlertAtMs: Long = 0L
+    val lastTamperAlertAtMs: Long = 0L,
+    val updateRequired: Boolean = false,
+    val requiredVersionCode: Int = 0,
+    val updateLockReason: String = ""
 ) {
     val createdAtMs: Long
         get() = createdAt

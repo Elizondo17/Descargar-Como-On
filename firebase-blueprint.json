@@ -64,6 +64,18 @@
           "type": "string",
           "description": "Firebase Auth UID claimed on first Google Sign-In"
         },
+        "updateRequired": {
+          "type": "boolean",
+          "description": "Per-user temporary update lock controlled by Superuser"
+        },
+        "requiredVersionCode": {
+          "type": "integer",
+          "description": "Minimum versionCode required to unlock the seller automatically"
+        },
+        "updateLockReason": {
+          "type": "string",
+          "description": "Optional reason or note shown on the update lock screen"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -131,6 +143,10 @@
         "releaseNotes": {
           "type": "string",
           "description": "Optional release notes displayed in the update prompt"
+        },
+        "forceUpdate": {
+          "type": "boolean",
+          "description": "Optional global mandatory update enforcement flag (defaults to false for optional notice)"
         },
         "payloadJson": {
           "type": "string",
@@ -267,16 +283,45 @@
         "ownerUid", "sellerName", "sellerEmail", "totalContacts", "totalVisits",
         "completedDemos", "closedSales", "pendingReplacements", "updatedAt"
       ]
+    },
+    "AppErrorReport": {
+      "title": "AppErrorReport",
+      "description": "Captured Firebase initialization failure during onCreate or filtered Firebase Logcat excerpt from seller devices.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "reporterEmail": { "type": "string" },
+        "reporterName": { "type": "string" },
+        "stage": { "type": "string", "enum": ["ON_CREATE", "LOGCAT_FIREBASE"] },
+        "errorMessage": { "type": "string" },
+        "stackTraceExcerpt": { "type": "string" },
+        "logcatExcerpt": { "type": "string" },
+        "deviceModel": { "type": "string" },
+        "androidSdk": { "type": "integer" },
+        "appVersionName": { "type": "string" },
+        "appVersionCode": { "type": "integer" },
+        "status": { "type": "string", "enum": ["OPEN", "RESOLVED"] },
+        "occurredAtMs": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "ownerUid", "reporterEmail", "reporterName", "stage",
+        "errorMessage", "stackTraceExcerpt", "logcatExcerpt", "deviceModel",
+        "androidSdk", "appVersionName", "appVersionCode", "status",
+        "occurredAtMs", "createdAt", "updatedAt"
+      ]
     }
   },
   "firestore": {
     "/authorized_users/{emailKey}": {
       "schema": { "$ref": "#/entities/AuthorizedUser" },
-      "description": "Google email allowlist, expiration, remote blocking, and multi-device hardware binding per user"
+      "description": "Google email allowlist, expiration, remote blocking, update lock, and multi-device hardware binding per user"
     },
     "/team_config/{configId}": {
       "schema": { "$ref": "#/entities/TeamConfig" },
-      "description": "Singleton role matrix and shared team feeds managed by Superuser"
+      "description": "Singleton role matrix, app_version notice/enforcement, and shared team feeds managed by Superuser"
     },
     "/seller_workspaces/{ownerUid}/contacts/{contactId}": {
       "schema": { "$ref": "#/entities/PsaContactRecord" },
@@ -293,6 +338,10 @@
     "/seller_stats/{ownerUid}": {
       "schema": { "$ref": "#/entities/SellerStats" },
       "description": "Aggregated KPI totals per seller readable by bootstrap admin"
+    },
+    "/AppErrors/{errorId}": {
+      "schema": { "$ref": "#/entities/AppErrorReport" },
+      "description": "Real-time Firebase initialization and Logcat errors captured from seller devices and monitored by Superuser"
     }
   }
 }

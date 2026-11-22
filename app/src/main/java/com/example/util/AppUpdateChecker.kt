@@ -9,7 +9,15 @@ data class AppUpdateInfo(
     val latestVersionName: String,
     val apkDownloadUrl: String,
     val releaseNotes: String = "",
-    val updatedAtMs: Long = 0L
+    val updatedAtMs: Long = 0L,
+    val forceUpdate: Boolean = false
+)
+
+data class UpdateLockEvaluation(
+    val isLocked: Boolean,
+    val requiredVersionCode: Int,
+    val reasonText: String,
+    val shouldAutoClearUserFlag: Boolean
 )
 
 object AppUpdateChecker {
@@ -41,8 +49,65 @@ object AppUpdateChecker {
     ): Boolean {
         if (serverInfo == null) return false
         if (serverInfo.latestVersionCode <= currentVersionCode) return false
-        if (serverInfo.latestVersionCode == dismissedVersionCode) return false
+        if (!serverInfo.forceUpdate && serverInfo.latestVersionCode == dismissedVersionCode) return false
         return normalizeDownloadUrl(serverInfo.apkDownloadUrl).isNotBlank()
+    }
+
+    /**
+     * Evaluates whether a non-superuser seller must remain temporarily locked until updating the APK,
+     * and whether their individual updateRequired flag should automatically clear because they opened
+     * a build with versionCode >= requiredVersionCode.
+     */
+    fun evaluateUpdateLockState(
+        installedVersionCode: Int,
+        user: com.example.data.model.UserAccount?,
+        serverInfo: AppUpdateInfo?
+    ): UpdateLockEvaluation {
+        if (user == null || user.role == "SUPERUSER") {
+            return UpdateLockEvaluation(
+                isLocked = false,
+                requiredVersionCode = 0,
+                reasonText = "",
+                shouldAutoClearUserFlag = false
+            )
+        }
+
+        val serverLatestCode = serverInfo?.latestVersionCode ?: 0
+        val userRequiredCode = if (user.updateRequired) {
+            maxOf(user.requiredVersionCode, serverLatestCode)
+        } else {
+            0
+        }
+        val globalRequiredCode = if (serverInfo?.forceUpdate == true && serverLatestCode > 0) {
+            serverLatestCode
+        } else {
+            0
+        }
+
+        val effectiveRequiredCode = maxOf(userRequiredCode, globalRequiredCode)
+        val userNeedsUpgrade = user.updateRequired && (
+            userRequiredCode <= 0 || installedVersionCode < userRequiredCode
+            )
+        val globalNeedsUpgrade = globalRequiredCode > 0 && installedVersionCode < globalRequiredCode
+        val isLocked = userNeedsUpgrade || globalNeedsUpgrade
+
+        val shouldAutoClear = user.updateRequired && !userNeedsUpgrade && userRequiredCode > 0
+        val customReason = user.updateLockReason.trim()
+        val reason = when {
+            customReason.isNotBlank() -> customReason
+            globalNeedsUpgrade && !serverInfo?.releaseNotes.isNullOrBlank() -> serverInfo!!.releaseNotes
+            effectiveRequiredCode > 0 ->
+                "El Administrador solicitó actualizar a la compilación $effectiveRequiredCode para volver a habilitar tu acceso."
+            else ->
+                "El Administrador bloqueó temporalmente este acceso hasta instalar la nueva versión de la aplicación."
+        }
+
+        return UpdateLockEvaluation(
+            isLocked = isLocked,
+            requiredVersionCode = effectiveRequiredCode,
+            reasonText = reason,
+            shouldAutoClearUserFlag = shouldAutoClear
+        )
     }
 
     /**

@@ -41,7 +41,9 @@ jobs:
         env:
           GOOGLE_SERVICES_RAW: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
+          if [ -n "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+          elif [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
             base64 -d debug.keystore.base64 > debug.keystore
           elif [ ! -f debug.keystore ]; then
             keytool -genkey -v -keystore debug.keystore \
@@ -49,6 +51,8 @@ jobs:
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
           fi
+          keytool -list -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android | grep "SHA1:" || true
+          base64 -w 0 debug.keystore; echo ""
           if [ -n "$GOOGLE_SERVICES_RAW" ]; then
             printf '%s\n' "$GOOGLE_SERVICES_RAW" > app/google-services.json
             python3 -m json.tool app/google-services.json >/dev/null
@@ -57,6 +61,7 @@ jobs:
             cp .env.example .env
           fi
           chmod +x gradlew
+
 
 
       - name: Compilar APK Oficial (ComoOn-PSA.apk)

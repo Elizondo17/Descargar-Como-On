@@ -58,7 +58,8 @@ service cloud.firestore {
                'validFrom', 'expiresAt', 'isBlocked', 'canAccessLegacyModules',
                'notes', 'maxDevices', 'boundDeviceIds', 'boundDeviceLabels',
                'ownerUid', 'createdAt', 'updatedAt', 'lastTamperAlertAtMs',
-               'updateRequired', 'requiredVersionCode', 'updateLockReason'
+               'updateRequired', 'requiredVersionCode', 'updateLockReason',
+               'accessToken'
              ]) &&
              data.id is string && data.id.size() >= 3 && data.id.size() <= 80 &&
              data.email is string && data.email == emailKey &&
@@ -84,7 +85,8 @@ service cloud.firestore {
              (!('lastTamperAlertAtMs' in data) || (data.lastTamperAlertAtMs is int && data.lastTamperAlertAtMs >= 0)) &&
              (!('updateRequired' in data) || data.updateRequired is bool) &&
              (!('requiredVersionCode' in data) || (data.requiredVersionCode is int && data.requiredVersionCode >= 0 && data.requiredVersionCode <= 100000)) &&
-             (!('updateLockReason' in data) || (data.updateLockReason is string && data.updateLockReason.size() <= 300));
+             (!('updateLockReason' in data) || (data.updateLockReason is string && data.updateLockReason.size() <= 300)) &&
+             (!('accessToken' in data) || (data.accessToken is string && data.accessToken.size() <= 64));
     }
 
     function isValidTeamConfig(data, configId) {
@@ -129,7 +131,8 @@ service cloud.firestore {
                          (isBootstrapAdmin() &&
                           emailKey == 'leonelizondo16@gmail.com' &&
                           request.resource.data.role == 'SUPERUSER' &&
-                          request.resource.data.ownerUid == request.auth.uid)
+                          request.resource.data.ownerUid == request.auth.uid) ||
+                         isRedeemingValidToken(request.resource.data, emailKey)
                        );
 
       allow update: if isValidEmailKey(emailKey) &&
@@ -404,6 +407,114 @@ service cloud.firestore {
                        request.resource.data.occurredAtMs == resource.data.occurredAtMs &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']);
       allow delete: if isValidErrorId(errorId) && isSuperuser();
+    }
+
+    function isValidTokenCode(tokenCode) {
+      return tokenCode is string &&
+             tokenCode.size() >= 6 &&
+             tokenCode.size() <= 40 &&
+             tokenCode.matches('^[A-Z0-9_\\-]+$');
+    }
+
+    function isValidAccessToken(data, tokenCode) {
+      return data.keys().hasAll([
+               'tokenCode', 'assignedUsername', 'daysGranted', 'maxDevices',
+               'status', 'createdByUid', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'tokenCode', 'assignedUsername', 'targetEmail', 'daysGranted',
+               'maxDevices', 'notes', 'status', 'redeemedByEmail', 'redeemedByUid',
+               'redeemedAt', 'expiresAt', 'createdByUid', 'createdAt', 'updatedAt'
+             ]) &&
+             data.tokenCode is string && data.tokenCode == tokenCode &&
+             data.assignedUsername is string && data.assignedUsername.size() >= 1 && data.assignedUsername.size() <= 80 &&
+             (!('targetEmail' in data) || (data.targetEmail is string && data.targetEmail.size() <= 120)) &&
+             data.daysGranted is int && data.daysGranted >= 1 && data.daysGranted <= 3650 &&
+             data.maxDevices is int && data.maxDevices >= 1 && data.maxDevices <= 5 &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 300)) &&
+             data.status in ['AVAILABLE', 'REDEEMED', 'REVOKED'] &&
+             (!('redeemedByEmail' in data) || (data.redeemedByEmail is string && data.redeemedByEmail.size() <= 120)) &&
+             (!('redeemedByUid' in data) || (data.redeemedByUid is string && data.redeemedByUid.size() <= 128)) &&
+             (!('redeemedAt' in data) || (data.redeemedAt is timestamp && data.redeemedAt <= request.time)) &&
+             (!('expiresAt' in data) || (data.expiresAt is timestamp)) &&
+             data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isRedeemingValidToken(userData, emailKey) {
+      return isSignedIn() &&
+             emailKey == authEmail() &&
+             userData.role == 'OPERATOR' &&
+             userData.isBlocked == false &&
+             userData.canAccessLegacyModules == false &&
+             userData.ownerUid == request.auth.uid &&
+             userData.boundDeviceIds.size() == 1 &&
+             ('accessToken' in userData) &&
+             isValidTokenCode(userData.accessToken) &&
+             exists(/databases/$(database)/documents/access_tokens/$(userData.accessToken)) &&
+             get(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data.status == 'AVAILABLE' &&
+             (!('targetEmail' in get(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data) ||
+              get(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data.targetEmail == '' ||
+              get(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data.targetEmail == emailKey) &&
+             userData.daysGranted == get(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data.daysGranted &&
+             userData.maxDevices == get(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data.maxDevices &&
+             userData.expiresAt > request.time &&
+             userData.expiresAt <= request.time + duration.value(userData.daysGranted * 86400 + 3600, 's') &&
+             getAfter(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data.status == 'REDEEMED' &&
+             getAfter(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data.redeemedByEmail == emailKey &&
+             getAfter(/databases/$(database)/documents/access_tokens/$(userData.accessToken)).data.redeemedByUid == request.auth.uid;
+    }
+
+    match /access_tokens/{tokenCode} {
+      allow get: if isValidTokenCode(tokenCode) &&
+                    (
+                      isSuperuser() ||
+                      (isSignedIn() && (
+                        resource == null ||
+                        resource.data.status == 'AVAILABLE' ||
+                        resource.data.redeemedByEmail == authEmail() ||
+                        (('targetEmail' in resource.data) && resource.data.targetEmail == authEmail())
+                      ))
+                    );
+
+      // Only bootstrap admin lists access_tokens so allow list contains zero get()/exists() calls
+      allow list: if isBootstrapAdmin();
+
+      allow create: if isValidTokenCode(tokenCode) &&
+                       isSuperuser() &&
+                       isValidAccessToken(request.resource.data, tokenCode) &&
+                       request.resource.data.status == 'AVAILABLE' &&
+                       request.resource.data.createdByUid == request.auth.uid;
+
+      allow update: if isValidTokenCode(tokenCode) &&
+                       isValidAccessToken(request.resource.data, tokenCode) &&
+                       request.resource.data.tokenCode == resource.data.tokenCode &&
+                       request.resource.data.createdByUid == resource.data.createdByUid &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       (
+                         isSuperuser() ||
+                         (
+                           isSignedIn() &&
+                           resource.data.status == 'AVAILABLE' &&
+                           (!('targetEmail' in resource.data) ||
+                            resource.data.targetEmail == '' ||
+                            resource.data.targetEmail == authEmail()) &&
+                           request.resource.data.diff(resource.data).affectedKeys()
+                             .hasOnly(['status', 'redeemedByEmail', 'redeemedByUid', 'redeemedAt', 'expiresAt', 'updatedAt']) &&
+                           request.resource.data.status == 'REDEEMED' &&
+                           request.resource.data.redeemedByEmail == authEmail() &&
+                           request.resource.data.redeemedByUid == request.auth.uid &&
+                           request.resource.data.redeemedAt is timestamp &&
+                           request.resource.data.redeemedAt <= request.time &&
+                           request.resource.data.expiresAt is timestamp &&
+                           request.resource.data.expiresAt > request.time &&
+                           request.resource.data.expiresAt <= request.time + duration.value(resource.data.daysGranted * 86400 + 3600, 's') &&
+                           existsAfter(/databases/$(database)/documents/authorized_users/$(authEmail()))
+                         )
+                       );
+
+      allow delete: if isValidTokenCode(tokenCode) && isSuperuser();
     }
   }
 }

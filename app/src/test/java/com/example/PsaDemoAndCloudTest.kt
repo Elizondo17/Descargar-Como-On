@@ -925,4 +925,310 @@ class PsaDemoAndCloudTest {
         )
         assertFalse(superEval.isLocked)
     }
+
+    @Test
+    fun `psaWorkspace keeps only agenda and live demo as primary foreground tabs`() {
+        val primary = com.example.ui.screens.psa.PsaWorkspaceTab.entries.filter { it.isPrimaryTab }
+        assertEquals(
+            listOf(
+                com.example.ui.screens.psa.PsaWorkspaceTab.AGENDA,
+                com.example.ui.screens.psa.PsaWorkspaceTab.LIVE_DEMO
+            ),
+            primary
+        )
+        assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.BUDGET.isPrimaryTab)
+        assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.STOCK.isPrimaryTab)
+        assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.CONTACTS.isPrimaryTab)
+        assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.SCRIPTS.isPrimaryTab)
+        assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.AI_MEMORY.isPrimaryTab)
+    }
+
+    @Test
+    fun `psaAgendaSearchHelper filters visits leads postSale and dates by name or date in real time`() {
+        val nov22Cal = java.util.Calendar.getInstance().apply {
+            set(2026, java.util.Calendar.NOVEMBER, 22, 10, 0, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val nov22Ms = nov22Cal.timeInMillis
+
+        val nov25Cal = java.util.Calendar.getInstance().apply {
+            set(2026, java.util.Calendar.NOVEMBER, 25, 14, 30, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val nov25Ms = nov25Cal.timeInMillis
+
+        val visits = listOf(
+            com.example.data.model.PsaHomeVisit(
+                id = "v1",
+                customerName = "María Pérez",
+                phone = "1155551111",
+                address = "Av. Rivadavia 1200",
+                neighborhood = "Caballito",
+                scheduledDate = "2026-11-22",
+                scheduledTime = "16:30"
+            ),
+            com.example.data.model.PsaHomeVisit(
+                id = "v2",
+                customerName = "Carlos Gómez",
+                phone = "1166662222",
+                address = "Calle Belgrano 400",
+                neighborhood = "Palermo",
+                scheduledDate = "2026-11-25",
+                scheduledTime = "18:00"
+            )
+        )
+
+        val leads = listOf(
+            com.example.data.model.PsaContactLead(
+                id = "l1",
+                name = "María Elena López",
+                phone = "1144443333",
+                neighborhood = "Almagro",
+                rescheduleDate = "2026-11-22",
+                lastContactDateMs = nov22Ms,
+                createdAtMs = nov22Ms
+            ),
+            com.example.data.model.PsaContactLead(
+                id = "l2",
+                name = "Lucas Martínez",
+                phone = "1177778888",
+                neighborhood = "Belgrano",
+                rescheduleDate = "",
+                lastContactDateMs = nov25Ms,
+                createdAtMs = nov25Ms
+            )
+        )
+
+        val postSale = listOf(
+            PsaPostSaleInstallation(
+                id = "ps1",
+                customerName = "María Laura Díaz",
+                customerPhone = "1199990000",
+                purifierName = "PSA Senior 4",
+                installedAtMs = nov22Ms - 86_400_000L * 365L,
+                nextReplacementAtMs = nov22Ms
+            ),
+            PsaPostSaleInstallation(
+                id = "ps2",
+                customerName = "Roberto Sosa",
+                customerPhone = "1122223333",
+                purifierName = "PSA Quantum",
+                installedAtMs = nov25Ms - 86_400_000L * 365L,
+                nextReplacementAtMs = nov25Ms
+            )
+        )
+
+        val uniqueDates = listOf(
+            "2026-11-22" to "Domingo 22 Nov",
+            "2026-11-25" to "Miércoles 25 Nov"
+        )
+        val displayMap = uniqueDates.toMap()
+
+        // 1. Accent & case-insensitive name filtering across all models
+        val mariaVisits = com.example.util.PsaAgendaSearchHelper.filterVisits(
+            visits = visits,
+            query = "maria",
+            scope = com.example.util.AgendaSearchScope.NAME,
+            displayDatesByKey = displayMap
+        )
+        assertEquals(listOf("v1"), mariaVisits.map { it.id })
+
+        val mariaLeads = com.example.util.PsaAgendaSearchHelper.filterLeads(
+            leads = leads,
+            query = "MARIA",
+            scope = com.example.util.AgendaSearchScope.NAME
+        )
+        assertEquals(listOf("l1"), mariaLeads.map { it.id })
+
+        val mariaPostSale = com.example.util.PsaAgendaSearchHelper.filterPostSale(
+            items = postSale,
+            query = "maria",
+            scope = com.example.util.AgendaSearchScope.NAME
+        )
+        assertEquals(listOf("ps1"), mariaPostSale.map { it.id })
+
+        // 2. Multi-format date search: "22/11", "2026-11-22", "domingo", "nov"
+        assertEquals(
+            listOf("v1"),
+            com.example.util.PsaAgendaSearchHelper.filterVisits(
+                visits, "22/11", com.example.util.AgendaSearchScope.DATE, displayMap
+            ).map { it.id }
+        )
+        assertEquals(
+            listOf("v1"),
+            com.example.util.PsaAgendaSearchHelper.filterVisits(
+                visits, "2026-11-22", com.example.util.AgendaSearchScope.DATE, displayMap
+            ).map { it.id }
+        )
+        assertEquals(
+            listOf("v1"),
+            com.example.util.PsaAgendaSearchHelper.filterVisits(
+                visits, "domingo", com.example.util.AgendaSearchScope.DATE, displayMap
+            ).map { it.id }
+        )
+        assertEquals(
+            listOf("v1", "v2"),
+            com.example.util.PsaAgendaSearchHelper.filterVisits(
+                visits, "nov", com.example.util.AgendaSearchScope.DATE, displayMap
+            ).map { it.id }
+        )
+        assertEquals(
+            listOf("l1"),
+            com.example.util.PsaAgendaSearchHelper.filterLeads(
+                leads, "22/11", com.example.util.AgendaSearchScope.DATE
+            ).map { it.id }
+        )
+        assertEquals(
+            listOf("ps2"),
+            com.example.util.PsaAgendaSearchHelper.filterPostSale(
+                postSale, "25/11", com.example.util.AgendaSearchScope.DATE
+            ).map { it.id }
+        )
+        assertEquals(
+            listOf("2026-11-22"),
+            com.example.util.PsaAgendaSearchHelper.filterUniqueDates(uniqueDates, "domingo").map { it.first }
+        )
+
+        // 3. Scope isolation (NAME ignores dates, DATE ignores names)
+        assertTrue(
+            com.example.util.PsaAgendaSearchHelper.filterVisits(
+                visits, "22/11", com.example.util.AgendaSearchScope.NAME, displayMap
+            ).isEmpty()
+        )
+        assertTrue(
+            com.example.util.PsaAgendaSearchHelper.filterLeads(
+                leads, "22/11", com.example.util.AgendaSearchScope.NAME
+            ).isEmpty()
+        )
+        assertTrue(
+            com.example.util.PsaAgendaSearchHelper.filterVisits(
+                visits, "María", com.example.util.AgendaSearchScope.DATE, displayMap
+            ).isEmpty()
+        )
+        assertTrue(
+            com.example.util.PsaAgendaSearchHelper.filterLeads(
+                leads, "Lucas", com.example.util.AgendaSearchScope.DATE
+            ).isEmpty()
+        )
+
+        // 4. Combined ALL scope matches combined name + date tokens
+        assertEquals(
+            listOf("v1"),
+            com.example.util.PsaAgendaSearchHelper.filterVisits(
+                visits, "maria 22/11", com.example.util.AgendaSearchScope.ALL, displayMap
+            ).map { it.id }
+        )
+        assertTrue(
+            com.example.util.PsaAgendaSearchHelper.filterVisits(
+                visits, "maria 25/11", com.example.util.AgendaSearchScope.ALL, displayMap
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun `licenseStatusFormatter validates custom days evaluates user and token expiration states and formats invites`() {
+        val now = 1_760_000_000_000L
+        val hourMs = 3_600_000L
+        val dayMs = 24L * hourMs
+
+        // Custom days sanitization (1..3650)
+        assertEquals(null, com.example.data.model.LicenseStatusFormatter.sanitizeCustomDays(""))
+        assertEquals(null, com.example.data.model.LicenseStatusFormatter.sanitizeCustomDays("0"))
+        assertEquals(null, com.example.data.model.LicenseStatusFormatter.sanitizeCustomDays("3651"))
+        assertEquals(null, com.example.data.model.LicenseStatusFormatter.sanitizeCustomDays("abc"))
+        assertEquals(1, com.example.data.model.LicenseStatusFormatter.sanitizeCustomDays("1"))
+        assertEquals(45, com.example.data.model.LicenseStatusFormatter.sanitizeCustomDays(" 45 "))
+        assertEquals(3650, com.example.data.model.LicenseStatusFormatter.sanitizeCustomDays("3650"))
+
+        // User license states: ACTIVE, EXPIRING_SOON, CRITICAL_24H, EXPIRED, BLOCKED
+        val baseUser = UserAccount(
+            id = "op_1",
+            username = "Laura Ventas",
+            token = "PSA-30D-AB12CD34",
+            role = "OPERATOR",
+            daysGranted = 30,
+            validFromMs = now - (10L * dayMs),
+            expiresAtMs = now + (20L * dayMs),
+            email = "laura@gmail.com"
+        )
+        val activeSnap = com.example.data.model.LicenseStatusFormatter.evaluateUserLicense(baseUser, now)
+        assertEquals(com.example.data.model.LicenseExpirationState.ACTIVE, activeSnap.state)
+        assertEquals("ACTIVA", activeSnap.statusLabel)
+        assertFalse(activeSnap.isRestricted)
+        assertTrue(activeSnap.progressFraction in 0.6f..0.7f)
+
+        val soonUser = baseUser.copy(expiresAtMs = now + (2L * dayMs) + (4L * hourMs))
+        val soonSnap = com.example.data.model.LicenseStatusFormatter.evaluateUserLicense(soonUser, now)
+        assertEquals(com.example.data.model.LicenseExpirationState.EXPIRING_SOON, soonSnap.state)
+        assertEquals("POR VENCER", soonSnap.statusLabel)
+
+        val criticalUser = baseUser.copy(expiresAtMs = now + (12L * hourMs))
+        val criticalSnap = com.example.data.model.LicenseStatusFormatter.evaluateUserLicense(criticalUser, now)
+        assertEquals(com.example.data.model.LicenseExpirationState.CRITICAL_24H, criticalSnap.state)
+        assertEquals("VENCE HOY", criticalSnap.statusLabel)
+
+        val expiredUser = baseUser.copy(expiresAtMs = now - (2L * dayMs) - (3L * hourMs))
+        val expiredSnap = com.example.data.model.LicenseStatusFormatter.evaluateUserLicense(expiredUser, now)
+        assertEquals(com.example.data.model.LicenseExpirationState.EXPIRED, expiredSnap.state)
+        assertEquals("EXPIRADA", expiredSnap.statusLabel)
+        assertTrue(expiredSnap.isRestricted)
+        assertEquals(0f, expiredSnap.progressFraction, 0.001f)
+        assertTrue(expiredSnap.countdownLabel.contains("2d 3h"))
+
+        val blockedSnap = com.example.data.model.LicenseStatusFormatter.evaluateUserLicense(
+            baseUser.copy(isBlocked = true),
+            now
+        )
+        assertEquals(com.example.data.model.LicenseExpirationState.BLOCKED, blockedSnap.state)
+        assertEquals("BLOQUEADA", blockedSnap.statusLabel)
+        assertTrue(blockedSnap.isRestricted)
+
+        // CloudAccessToken evaluation lifecycle
+        val availToken = com.example.data.model.CloudAccessToken(
+            tokenCode = "PSA-45D-1234ABCD",
+            assignedUsername = "Laura Ventas",
+            targetEmail = "laura@gmail.com",
+            daysGranted = 45,
+            maxDevices = 2,
+            status = com.example.data.model.CloudAccessTokenStatus.AVAILABLE.name,
+            createdAtMs = now - dayMs
+        )
+        val availEval = com.example.data.model.LicenseStatusFormatter.evaluateAccessToken(availToken, now)
+        assertEquals(com.example.data.model.LicenseExpirationState.PENDING_ACTIVATION, availEval.state)
+        assertEquals("DISPONIBLE", availEval.statusLabel)
+        assertTrue(availEval.countdownLabel.contains("45"))
+
+        val redeemedEval = com.example.data.model.LicenseStatusFormatter.evaluateAccessToken(
+            availToken.copy(
+                status = com.example.data.model.CloudAccessTokenStatus.REDEEMED.name,
+                redeemedByEmail = "laura@gmail.com",
+                redeemedAtMs = now - (43L * dayMs),
+                expiresAtMs = now + (2L * dayMs)
+            ),
+            now
+        )
+        assertEquals(com.example.data.model.LicenseExpirationState.EXPIRING_SOON, redeemedEval.state)
+
+        val revokedEval = com.example.data.model.LicenseStatusFormatter.evaluateAccessToken(
+            availToken.copy(status = com.example.data.model.CloudAccessTokenStatus.REVOKED.name),
+            now
+        )
+        assertEquals(com.example.data.model.LicenseExpirationState.REVOKED, revokedEval.state)
+        assertTrue(revokedEval.isRestricted)
+
+        val inviteText = com.example.data.repository.EzoRepository.buildAccessTokenInviteMessage(
+            username = "Laura Ventas",
+            tokenCode = "PSA-45D-1234ABCD",
+            days = 45,
+            maxDevices = 2,
+            targetEmail = "laura@gmail.com",
+            apkDownloadUrl = "https://github.com/Elizondo17/Descargar-Como-On/releases/latest/download/ComoOn-PSA.apk"
+        )
+        assertTrue(inviteText.contains("PSA-45D-1234ABCD"))
+        assertTrue(inviteText.contains("45 días"))
+        assertTrue(inviteText.contains("laura@gmail.com"))
+        assertTrue(inviteText.contains("Canjear Token y Activar"))
+    }
 }
+
+

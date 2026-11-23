@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.DevicesOther
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -37,10 +38,15 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,7 +84,10 @@ fun AuthScreen(
 ) {
     val context = LocalContext.current
     val authState by viewModel.googleAuthUiState.collectAsState()
-    val isLoading = authState is GoogleAuthUiState.Loading
+    val isRedeemingToken by viewModel.isRedeemingToken.collectAsState()
+    val accessTokenFeedback by viewModel.accessTokenActionFeedback.collectAsState()
+    var tokenInput by remember { mutableStateOf("") }
+    val isLoading = authState is GoogleAuthUiState.Loading || isRedeemingToken
 
     fun openWhatsAppRequest(message: String) {
         try {
@@ -239,6 +248,88 @@ fun AuthScreen(
                                 fontSize = 12.5.sp,
                                 lineHeight = 17.sp
                             )
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(SlateBackground)
+                                    .border(1.dp, IndigoPrimary.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "¿Tienes un Token de Acceso?",
+                                    color = PsaCyanGlow,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.5.sp
+                                )
+                                OutlinedTextField(
+                                    value = tokenInput,
+                                    onValueChange = {
+                                        tokenInput = it.uppercase()
+                                        if (accessTokenFeedback != null) {
+                                            viewModel.clearAccessTokenFeedback()
+                                        }
+                                    },
+                                    label = { Text("Ingresa tu token (ej: PSA-30D-...)") },
+                                    singleLine = true,
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Key, contentDescription = null, tint = PsaCyanGlow)
+                                    },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = PsaCyanGlow,
+                                        unfocusedBorderColor = SlateCardBorder,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("auth_token_redeem_input")
+                                )
+                                accessTokenFeedback?.let { errMsg ->
+                                    Text(
+                                        text = errMsg,
+                                        color = RoseError,
+                                        fontSize = 11.5.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                                Button(
+                                    onClick = {
+                                        viewModel.redeemAccessToken(tokenInput) {
+                                            Toast.makeText(
+                                                context,
+                                                "Licencia activada en Firebase",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                            onLoginSuccess()
+                                        }
+                                    },
+                                    enabled = !isRedeemingToken && tokenInput.trim().length >= 6,
+                                    colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("auth_token_redeem_button")
+                                ) {
+                                    if (isRedeemingToken) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            color = Color.White,
+                                            strokeWidth = 2.dp
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Validando token...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                                    } else {
+                                        Icon(Icons.Default.Key, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Canjear Token y Activar", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                                    }
+                                }
+                            }
+
                             Button(
                                 onClick = {
                                     openWhatsAppRequest(

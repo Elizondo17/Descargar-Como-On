@@ -1580,6 +1580,35 @@ class EzoRepository(
                 "🔗 Descarga directa en 1 toque:\n$cleanUrl\n\n" +
                 "👉 Descarga e instala en tu Android y entra con 'Continuar con Google'."
         }
+
+        fun buildAccessTokenInviteMessage(
+            username: String,
+            tokenCode: String,
+            days: Int,
+            maxDevices: Int,
+            targetEmail: String,
+            apkDownloadUrl: String
+        ): String {
+            val cleanUrl = normalizeApkDownloadUrl(apkDownloadUrl)
+            val downloadLine = if (cleanUrl.isNotBlank()) {
+                "📥 Descarga e instala el APK:\n$cleanUrl\n\n"
+            } else {
+                "📥 Instala el archivo ComoOn-PSA.apk compartido.\n\n"
+            }
+            val accountLine = if (targetEmail.isNotBlank()) {
+                "📧 Inicia sesión con tu cuenta Google: ${targetEmail.trim().lowercase()}\n"
+            } else {
+                "📧 Inicia sesión con Google ('Continuar con Google')\n"
+            }
+            return "🔑 Token de Acceso a Como On PSA\n" +
+                "👤 Vendedor: ${username.trim()}\n" +
+                "🏷️ Token: $tokenCode\n" +
+                "⏳ Vigencia al activar: $days días\n" +
+                "📱 Equipos permitidos: ${maxDevices.coerceIn(1, 5)}\n\n" +
+                downloadLine +
+                accountLine +
+                "👉 Al aparecer 'Cuenta aún no autorizada', pega el token $tokenCode y toca 'Canjear Token y Activar'."
+        }
     }
 }
 

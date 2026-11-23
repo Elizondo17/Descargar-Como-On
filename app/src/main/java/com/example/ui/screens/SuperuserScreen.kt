@@ -128,6 +128,7 @@ import java.util.UUID
 
 enum class AdminPrimaryTab {
     OPERATORS,
+    TOKENS,
     PERFORMANCE,
     OFFERING,
     ASSISTANT
@@ -170,6 +171,9 @@ fun SuperuserScreen(
     val isLoadingAppErrors by viewModel.isLoadingAppErrors.collectAsState()
     val pendingLocalErrorCount by viewModel.pendingLocalErrorCount.collectAsState()
     val appErrorsFeedback by viewModel.appErrorsFeedback.collectAsState()
+    val cloudAccessTokens by viewModel.cloudAccessTokens.collectAsState()
+    val isRefreshingAccessTokens by viewModel.isRefreshingAccessTokens.collectAsState()
+    val accessTokenActionFeedback by viewModel.accessTokenActionFeedback.collectAsState()
     val businessProfile by viewModel.businessProfile.collectAsState()
     val allScannedChats by viewModel.allScannedChats.collectAsState()
     val isGlobalLegacyEnabled by viewModel.isGlobalLegacyEnabled.collectAsState()
@@ -210,6 +214,14 @@ fun SuperuserScreen(
         if (!msg.isNullOrBlank()) {
             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             viewModel.clearAppErrorsFeedback()
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(accessTokenActionFeedback) {
+        val msg = accessTokenActionFeedback
+        if (!msg.isNullOrBlank()) {
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            viewModel.clearAccessTokenFeedback()
         }
     }
 
@@ -524,12 +536,13 @@ fun SuperuserScreen(
                     .clip(RoundedCornerShape(12.dp))
                     .background(SlateCard)
                     .border(1.dp, SlateCardBorder, RoundedCornerShape(12.dp))
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                    .padding(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 listOf(
                     AdminPrimaryTab.OPERATORS to "👥 Operadores",
+                    AdminPrimaryTab.TOKENS to "🔑 Tokens",
                     AdminPrimaryTab.PERFORMANCE to "📊 Rendimiento",
                     AdminPrimaryTab.OFFERING to "💼 Mi Oferta",
                     AdminPrimaryTab.ASSISTANT to "⚡ Asistente"
@@ -537,16 +550,24 @@ fun SuperuserScreen(
                     val isSelected = activePrimaryTab == tab
                     Box(
                         modifier = Modifier
-                            .let { if (isLargeFont) it.fillMaxWidth() else it.weight(1f) }
+                            .let { if (isLargeFont) it.fillMaxWidth() else it }
+                            .heightIn(min = 48.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .background(if (isSelected) PurpleNeon else Color.Transparent)
+                            .background(if (isSelected) PurpleNeon else SlateBackground)
+                            .border(
+                                1.dp,
+                                if (isSelected) PurpleNeon else SlateCardBorder,
+                                RoundedCornerShape(8.dp)
+                            )
                             .clickable {
                                 activePrimaryTab = tab
                                 if (tab == AdminPrimaryTab.PERFORMANCE && isCloudGoogleConnected) {
                                     viewModel.refreshSellerPerformanceBoard()
+                                } else if (tab == AdminPrimaryTab.TOKENS && isCloudGoogleConnected) {
+                                    viewModel.refreshCloudAccessTokens()
                                 }
                             }
-                            .padding(horizontal = 6.dp, vertical = 9.dp)
+                            .padding(horizontal = 12.dp, vertical = 9.dp)
                             .testTag("admin_tab_${tab.name.lowercase()}"),
                         contentAlignment = Alignment.Center
                     ) {
@@ -554,7 +575,8 @@ fun SuperuserScreen(
                             text = label,
                             color = if (isSelected) Color.White else TextSecondary,
                             fontSize = 11.5.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1
                         )
                     }
                 }
@@ -2119,6 +2141,29 @@ fun SuperuserScreen(
                     }
                 }
             }
+        }
+
+        // ==========================================
+        // TAB 1B: TOKENS & EXPIRACIÓN DE LICENCIAS
+        // ==========================================
+        if (activePrimaryTab == AdminPrimaryTab.TOKENS) {
+            val resolvedTokenInviteUrl = com.example.data.repository.EzoRepository.buildGithubDirectApkUrl(
+                ghUserInput,
+                ghRepoInput
+            ).ifBlank {
+                com.example.data.repository.EzoRepository.normalizeApkDownloadUrl(apkUrlInput)
+            }
+            superuserTokensSection(
+                context = context,
+                viewModel = viewModel,
+                secondaryUsers = secondaryUsers,
+                cloudAccessTokens = cloudAccessTokens,
+                isCloudGoogleConnected = isCloudGoogleConnected,
+                isRefreshingTokens = isRefreshingAccessTokens,
+                effectiveInviteUrl = resolvedTokenInviteUrl,
+                isLargeFont = isLargeFont,
+                onEditUser = { userToEdit -> editingUser = userToEdit }
+            )
         }
 
         // ==========================================

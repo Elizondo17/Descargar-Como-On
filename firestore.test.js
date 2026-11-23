@@ -581,3 +581,181 @@ test("AppErrors enforces authenticated owner create and superuser-only listing, 
   );
   await assertSucceeds(adminDb.collection("AppErrors").doc("err_init_001").delete());
 });
+
+test("Superuser manages access_tokens; authenticated user can redeem valid AVAILABLE token via WriteBatch", async () => {
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const seller1Db = testEnv
+    .authenticatedContext("uid-seller-1", {
+      email: OP_EMAIL,
+      email_verified: true,
+    })
+    .firestore();
+  const seller2Db = testEnv
+    .authenticatedContext("uid-seller-2", {
+      email: "vendedor2@gmail.com",
+      email_verified: true,
+    })
+    .firestore();
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", {
+      email: ADMIN_EMAIL,
+      email_verified: true,
+    })
+    .firestore();
+
+  const tokenCode = "PSA-30D-AB12CD34";
+  const tokenDoc = {
+    tokenCode,
+    assignedUsername: "Carlos Ventas",
+    targetEmail: OP_EMAIL,
+    daysGranted: 30,
+    maxDevices: 2,
+    notes: "Alta comercial",
+    status: "AVAILABLE",
+    createdByUid: "uid-admin",
+    createdAt: pastDate(1000),
+    updatedAt: pastDate(1000),
+  };
+
+  // Non-admin and unauthenticated users cannot create or list tokens
+  await assertFails(unauthDb.collection("access_tokens").doc(tokenCode).set(tokenDoc));
+  await assertFails(seller1Db.collection("access_tokens").doc(tokenCode).set(tokenDoc));
+  await assertFails(seller1Db.collection("access_tokens").get());
+
+  // Admin creates and lists token
+  await assertSucceeds(adminDb.collection("access_tokens").doc(tokenCode).set(tokenDoc));
+  await assertSucceeds(adminDb.collection("access_tokens").get());
+
+  // Wrong user (targetEmail mismatch) cannot redeem token even in WriteBatch
+  const wrongUserExpires = new Date(Date.now() + 30 * 86400 * 1000);
+  const wrongBatch = seller2Db.batch();
+  wrongBatch.set(seller2Db.collection("authorized_users").doc("vendedor2@gmail.com"), {
+    id: "op_tok_wrong",
+    email: "vendedor2@gmail.com",
+    username: "Otro",
+    role: "OPERATOR",
+    daysGranted: 30,
+    validFrom: pastDate(200),
+    expiresAt: wrongUserExpires,
+    isBlocked: false,
+    canAccessLegacyModules: false,
+    notes: "Alta comercial",
+    maxDevices: 2,
+    boundDeviceIds: ["dev-2"],
+    boundDeviceLabels: ["Pixel 8"],
+    ownerUid: "uid-seller-2",
+    accessToken: tokenCode,
+    createdAt: pastDate(200),
+    updatedAt: pastDate(200),
+  });
+  wrongBatch.update(seller2Db.collection("access_tokens").doc(tokenCode), {
+    status: "REDEEMED",
+    redeemedByEmail: "vendedor2@gmail.com",
+    redeemedByUid: "uid-seller-2",
+    redeemedAt: pastDate(200),
+    expiresAt: wrongUserExpires,
+    updatedAt: pastDate(200),
+  });
+  await assertFails(wrongBatch.commit());
+
+  // Seller cannot redeem token with tampered role=SUPERUSER or tampered daysGranted=3650
+  const tamperedBatch = seller1Db.batch();
+  tamperedBatch.set(seller1Db.collection("authorized_users").doc(OP_EMAIL), {
+    id: "op_tok_tamper",
+    email: OP_EMAIL,
+    username: "Carlos Ventas",
+    role: "SUPERUSER",
+    daysGranted: 30,
+    validFrom: pastDate(200),
+    expiresAt: wrongUserExpires,
+    isBlocked: false,
+    canAccessLegacyModules: false,
+    notes: "",
+    maxDevices: 2,
+    boundDeviceIds: ["dev-1"],
+    boundDeviceLabels: ["Pixel 7"],
+    ownerUid: "uid-seller-1",
+    accessToken: tokenCode,
+    createdAt: pastDate(200),
+    updatedAt: pastDate(200),
+  });
+  tamperedBatch.update(seller1Db.collection("access_tokens").doc(tokenCode), {
+    status: "REDEEMED",
+    redeemedByEmail: OP_EMAIL,
+    redeemedByUid: "uid-seller-1",
+    redeemedAt: pastDate(200),
+    expiresAt: wrongUserExpires,
+    updatedAt: pastDate(200),
+  });
+  await assertFails(tamperedBatch.commit());
+
+  // Target seller atomically redeems AVAILABLE token via WriteBatch
+  const validExpires = new Date(Date.now() + 29 * 86400 * 1000);
+  const validBatch = seller1Db.batch();
+  validBatch.set(seller1Db.collection("authorized_users").doc(OP_EMAIL), {
+    id: "op_tok_ok",
+    email: OP_EMAIL,
+    username: "Carlos Ventas",
+    role: "OPERATOR",
+    daysGranted: 30,
+    validFrom: pastDate(200),
+    expiresAt: validExpires,
+    isBlocked: false,
+    canAccessLegacyModules: false,
+    notes: "Alta comercial",
+    maxDevices: 2,
+    boundDeviceIds: ["dev-1"],
+    boundDeviceLabels: ["Pixel 7"],
+    ownerUid: "uid-seller-1",
+    accessToken: tokenCode,
+    createdAt: pastDate(200),
+    updatedAt: pastDate(200),
+  });
+  validBatch.update(seller1Db.collection("access_tokens").doc(tokenCode), {
+    status: "REDEEMED",
+    redeemedByEmail: OP_EMAIL,
+    redeemedByUid: "uid-seller-1",
+    redeemedAt: pastDate(200),
+    expiresAt: validExpires,
+    updatedAt: pastDate(200),
+  });
+  await assertSucceeds(validBatch.commit());
+
+  // Redeemed token cannot be redeemed a second time
+  const replayBatch = seller1Db.batch();
+  replayBatch.update(seller1Db.collection("access_tokens").doc(tokenCode), {
+    status: "REDEEMED",
+    redeemedByEmail: OP_EMAIL,
+    redeemedByUid: "uid-seller-1",
+    redeemedAt: pastDate(100),
+    expiresAt: validExpires,
+    updatedAt: pastDate(100),
+  });
+  await assertFails(replayBatch.commit());
+
+  // Admin can create an open token, revoke it, and delete it; seller cannot revoke or delete
+  const openTokenCode = "PSA-15D-ZZ99YY88";
+  await assertSucceeds(
+    adminDb.collection("access_tokens").doc(openTokenCode).set({
+      tokenCode: openTokenCode,
+      assignedUsername: "Nuevo Vendedor",
+      targetEmail: "",
+      daysGranted: 15,
+      maxDevices: 1,
+      notes: "",
+      status: "AVAILABLE",
+      createdByUid: "uid-admin",
+      createdAt: pastDate(500),
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(seller1Db.collection("access_tokens").doc(openTokenCode).delete());
+  await assertSucceeds(
+    adminDb.collection("access_tokens").doc(openTokenCode).update({
+      status: "REVOKED",
+      updatedAt: pastDate(100),
+    })
+  );
+  await assertSucceeds(adminDb.collection("access_tokens").doc(openTokenCode).delete());
+});
+

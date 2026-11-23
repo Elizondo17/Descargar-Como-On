@@ -7,7 +7,12 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -47,6 +52,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.LocalDrink
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Send
@@ -61,26 +67,29 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -89,7 +98,9 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -129,6 +140,8 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.MainViewModel
+import com.example.util.AgendaSearchScope
+import com.example.util.PsaAgendaSearchHelper
 import com.example.util.PsaCountryConfig
 import com.example.util.PsaCountryRegistry
 import com.example.util.PsaScheduleManager
@@ -141,7 +154,10 @@ enum class PsaWorkspaceTab(val label: String) {
     STOCK("📦 Stock"),
     SCRIPTS("💬 Guiones"),
     LIVE_DEMO("🔬 Demostración"),
-    AI_MEMORY("🧠 IA")
+    AI_MEMORY("🧠 IA");
+
+    val isPrimaryTab: Boolean
+        get() = this == AGENDA || this == LIVE_DEMO
 }
 
 data class PsaChlorineStage(
@@ -160,12 +176,9 @@ data class PsaChlorineStage(
 @Composable
 fun PsaWorkspaceScreen(
     viewModel: MainViewModel,
+    onOpenHelpGuide: () -> Unit = {},
     onClose: () -> Unit = {}
 ) {
-    BackHandler {
-        onClose()
-    }
-
     val context = LocalContext.current
     val isLargeFont = LocalIsLargeFontMode.current
     val allVisits by viewModel.allPsaVisits.collectAsState()
@@ -178,6 +191,17 @@ fun PsaWorkspaceScreen(
     val pendingOfficialPvp by viewModel.pendingOfficialPvpConfirmation.collectAsState()
 
     var activeTab by remember { mutableStateOf(PsaWorkspaceTab.AGENDA) }
+    var lastPrimaryTab by remember { mutableStateOf(PsaWorkspaceTab.AGENDA) }
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val coroutineScope = rememberCoroutineScope()
+
+    val navigateToTab: (PsaWorkspaceTab) -> Unit = { target ->
+        if (target.isPrimaryTab) {
+            lastPrimaryTab = target
+        }
+        activeTab = target
+    }
+
     var demoWaterSource by remember { mutableStateOf(DemoWaterSource.AGUA_CORRIENTE) }
     var tapCartQuantities by remember { mutableStateOf(mapOf("senior4" to 1)) }
     var wellCartQuantities by remember { mutableStateOf(mapOf("rotech" to 1)) }
@@ -227,258 +251,320 @@ fun PsaWorkspaceScreen(
 
     val freeSlotsCount = currentDaySlots.count { it.status == PsaSlotStatus.FREE }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(SlateBackground)
+    BackHandler {
+        onClose()
+    }
+    BackHandler(enabled = drawerState.isOpen || !activeTab.isPrimaryTab) {
+        when {
+            drawerState.isOpen -> coroutineScope.launch { drawerState.close() }
+            !activeTab.isPrimaryTab -> activeTab = lastPrimaryTab
+        }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = !showPresentationMode,
+        drawerContent = {
+            PsaToolsDrawerSheet(
+                activeTab = activeTab,
+                activeCountry = activeCountry,
+                onSelectTab = { target ->
+                    navigateToTab(target)
+                    coroutineScope.launch { drawerState.close() }
+                },
+                onOpenAdvisorQuiz = {
+                    coroutineScope.launch { drawerState.close() }
+                    showAdvisorQuiz = true
+                },
+                onOpenHelpGuide = {
+                    coroutineScope.launch { drawerState.close() }
+                    onOpenHelpGuide()
+                },
+                onCloseDrawer = {
+                    coroutineScope.launch { drawerState.close() }
+                }
+            )
+        }
     ) {
-        // --- HEADER LIMPIO Y ESPACIADO (Adaptable 140%–160%) ---
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF0E1826))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .fillMaxSize()
+                .background(SlateBackground)
         ) {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+            // --- HEADER LIMPIO Y ESPACIADO (Adaptable 140%–160%) ---
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF0E1826))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("psa_btn_back")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Volver",
-                            tint = PsaCyanGlow
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(4.dp))
-
-                    Text(
-                        text = "PSA",
-                        color = PsaCyanGlow,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp,
-                        letterSpacing = 0.3.sp
-                    )
-
-                    Spacer(modifier = Modifier.width(10.dp))
-
-                    OutlinedButton(
-                        onClick = { showCountryPicker = true },
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, SlateCardBorder),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier
-                            .heightIn(min = 40.dp)
-                            .testTag("psa_btn_country_picker")
-                    ) {
-                        Text(
-                            text = "${activeCountry.flag} ${activeCountry.currencyCode}",
-                            color = PsaCyanGlow,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-
                 FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    OutlinedButton(
-                        onClick = { showOfficialWebBrowser = true },
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .heightIn(min = 42.dp)
-                            .testTag("psa_btn_portal_dip"),
-                        border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.45f))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp), tint = PsaCyanGlow)
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Text("Portal DIP", color = PsaCyanGlow, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                    }
+                        IconButton(
+                            onClick = { coroutineScope.launch { drawerState.open() } },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("psa_btn_open_tools_drawer")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Menu,
+                                contentDescription = "Abrir menú de herramientas PSA",
+                                tint = PsaCyanGlow
+                            )
+                        }
 
-                    OutlinedButton(
-                        onClick = { showPricingDialog = true },
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .heightIn(min = 42.dp)
-                            .testTag("psa_btn_pricing_settings"),
-                        border = BorderStroke(1.dp, SlateCardBorder)
-                    ) {
-                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(15.dp), tint = TextPrimary)
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Text("Precios", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                    }
-
-                    Button(
-                        onClick = { showNewVisitDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = PsaCyanPrimary),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .heightIn(min = 42.dp)
-                            .testTag("psa_btn_new_visit")
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Visita", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+
+                        Text(
+                            text = "PSA",
+                            color = PsaCyanGlow,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            letterSpacing = 0.3.sp
+                        )
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        OutlinedButton(
+                            onClick = { showCountryPicker = true },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, SlateCardBorder),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("psa_btn_country_picker")
+                        ) {
+                            Text(
+                                text = "${activeCountry.flag} ${activeCountry.currencyCode}",
+                                color = PsaCyanGlow,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showOfficialWebBrowser = true },
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("psa_btn_portal_dip"),
+                            border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.45f))
+                        ) {
+                            Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp), tint = PsaCyanGlow)
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text("Portal DIP", color = PsaCyanGlow, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = { showPricingDialog = true },
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("psa_btn_pricing_settings"),
+                            border = BorderStroke(1.dp, SlateCardBorder)
+                        ) {
+                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(15.dp), tint = TextPrimary)
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text("Precios", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        }
+
+                        Button(
+                            onClick = { showNewVisitDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = PsaCyanPrimary),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("psa_btn_new_visit")
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Visita", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
                 }
             }
-        }
 
-        // --- SUB-NAVIGATION TABS ---
-        ScrollableTabRow(
-            selectedTabIndex = activeTab.ordinal,
-            containerColor = SlateBackground,
-            contentColor = PsaCyanGlow,
-            edgePadding = 10.dp,
-            indicator = { tabPositions ->
-                TabRowDefaults.SecondaryIndicator(
-                    Modifier.tabIndicatorOffset(tabPositions[activeTab.ordinal]),
-                    color = PsaCyanGlow,
-                    height = 3.dp
-                )
+            // --- SOLO 2 PESTAÑAS PRINCIPALES VISIBLES: AGENDA & DEMOSTRACIÓN ---
+            val primaryTabs = listOf(PsaWorkspaceTab.AGENDA, PsaWorkspaceTab.LIVE_DEMO)
+            val selectedPrimaryIndex = when (activeTab) {
+                PsaWorkspaceTab.LIVE_DEMO -> 1
+                else -> 0
             }
-        ) {
-            PsaWorkspaceTab.entries.forEach { tab ->
-                Tab(
-                    selected = activeTab == tab,
-                    onClick = { activeTab = tab },
-                    text = {
-                        Text(
-                            text = tab.label,
-                            fontWeight = if (activeTab == tab) FontWeight.Bold else FontWeight.Medium,
-                            fontSize = 12.5.sp,
-                            color = if (activeTab == tab) PsaCyanGlow else TextSecondary
+            TabRow(
+                selectedTabIndex = selectedPrimaryIndex,
+                containerColor = SlateBackground,
+                contentColor = PsaCyanGlow,
+                indicator = { tabPositions ->
+                    if (activeTab.isPrimaryTab) {
+                        TabRowDefaults.SecondaryIndicator(
+                            Modifier.tabIndicatorOffset(tabPositions[selectedPrimaryIndex]),
+                            color = PsaCyanGlow,
+                            height = 3.dp
                         )
-                    },
-                    modifier = Modifier.testTag("psa_tab_${tab.name.lowercase()}")
-                )
-            }
-        }
-
-        // --- TAB CONTENT ---
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .weight(1f)
-        ) {
-            when (activeTab) {
-                PsaWorkspaceTab.AGENDA -> PsaAgendaTabContent(
-                    context = context,
-                    viewModel = viewModel,
-                    uniqueDates = uniqueDates,
-                    selectedDateKey = selectedDateKey,
-                    currentDaySlots = currentDaySlots,
-                    freeSlotsCount = freeSlotsCount,
-                    pricingConfig = pricingConfig,
-                    postSaleList = postSaleList,
-                    onOpenNewVisitDialog = { slot ->
-                        slotToBook = slot
-                        showNewVisitDialog = true
-                    },
-                    onOpenPricingSettings = { showPricingDialog = true },
-                    onStartDemo = { visit ->
-                        selectedVisitForDemo = visit
-                        if (visit.waterSource == DemoWaterSource.AGUA_DE_POZO.name) {
-                            demoWaterSource = DemoWaterSource.AGUA_DE_POZO
-                        } else if (visit.waterSource == DemoWaterSource.AGUA_CORRIENTE.name) {
-                            demoWaterSource = DemoWaterSource.AGUA_CORRIENTE
-                        }
-                        activeTab = PsaWorkspaceTab.LIVE_DEMO
                     }
-                )
+                }
+            ) {
+                primaryTabs.forEach { tab ->
+                    val isSelected = activeTab == tab
+                    Tab(
+                        selected = isSelected,
+                        onClick = { navigateToTab(tab) },
+                        text = {
+                            Text(
+                                text = tab.label,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 13.sp,
+                                color = if (isSelected) PsaCyanGlow else TextSecondary
+                            )
+                        },
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("psa_tab_${tab.name.lowercase()}")
+                    )
+                }
+            }
 
-                PsaWorkspaceTab.CONTACTS -> PsaContactsTabContent(
-                    viewModel = viewModel
+            if (!activeTab.isPrimaryTab) {
+                PsaSecondaryToolContextBar(
+                    activeTab = activeTab,
+                    lastPrimaryTab = lastPrimaryTab,
+                    onBackToPrimary = { navigateToTab(lastPrimaryTab) },
+                    onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
                 )
+            }
 
-                PsaWorkspaceTab.BUDGET -> PsaBudgetTabContent(
-                    context = context,
-                    viewModel = viewModel,
-                    pricingConfig = pricingConfig,
-                    activeCountry = activeCountry,
-                    initialHandoff = budgetHandoff,
-                    onRegisterPostSale = { custName, purifierId, purifierName, cycleMonths ->
-                        viewModel.registerPostSaleInstallation(
-                            customerName = custName,
-                            customerPhone = selectedVisitForDemo?.phone ?: "",
-                            purifierId = purifierId,
-                            purifierName = purifierName,
-                            replacementCycleMonths = cycleMonths,
-                            visitId = selectedVisitForDemo?.id ?: ""
-                        )
+            // --- CONTENIDO DE PESTAÑAS / HERRAMIENTAS ---
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f)
+            ) {
+                AnimatedContent(
+                    targetState = activeTab,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(180))
                     },
-                    onOpenPricingSettings = { showPricingDialog = true }
-                )
-
-                PsaWorkspaceTab.STOCK -> PsaStockTabContent(
-                    context = context,
-                    pricingConfig = pricingConfig,
-                    activeCountry = activeCountry,
-                    onOpenPortalSync = { showPortalDialog = true }
-                )
-
-                PsaWorkspaceTab.SCRIPTS -> PsaScriptsTabContent(
-                    context = context,
-                    viewModel = viewModel,
-                    scheduleSlots = scheduleSlots
-                )
-
-                PsaWorkspaceTab.LIVE_DEMO -> PsaClientDemoSection(
-                    pricingConfig = pricingConfig,
-                    activeCountry = activeCountry,
-                    isFullscreenPresentation = false,
-                    initialWaterSource = demoWaterSource,
-                    onWaterSourceChange = { demoWaterSource = it },
-                    initialTapCart = tapCartQuantities,
-                    onTapCartChange = { tapCartQuantities = it },
-                    initialWellCart = wellCartQuantities,
-                    onWellCartChange = { wellCartQuantities = it },
-                    onOpenFullscreen = { showPresentationMode = true },
-                    onRequestCartBudget = { items, mode ->
-                        budgetHandoff = DemoToBudgetHandoff(
-                            purifierId = items.firstOrNull()?.purifierId ?: "senior4",
-                            items = items,
-                            paymentMode = mode
-                        )
-                        activeTab = PsaWorkspaceTab.BUDGET
-                    },
-                    activeVisit = selectedVisitForDemo,
-                    onClearActiveVisit = { selectedVisitForDemo = null },
-                    onSaveDiagnosticToVisit = { visit, source, chlorine, hardness, liters, cartText, photoPath ->
-                        viewModel.saveDemoSnapshotToVisit(
+                    label = "psa_tab_content"
+                ) { tab ->
+                    when (tab) {
+                        PsaWorkspaceTab.AGENDA -> PsaAgendaTabContent(
                             context = context,
-                            visit = visit,
-                            chlorinePpm = chlorine,
-                            waterSource = source,
-                            hardnessPpm = hardness,
-                            realLitersPerDay = liters,
-                            cartSummary = cartText,
-                            testPhotoPath = photoPath
+                            viewModel = viewModel,
+                            uniqueDates = uniqueDates,
+                            selectedDateKey = selectedDateKey,
+                            currentDaySlots = currentDaySlots,
+                            freeSlotsCount = freeSlotsCount,
+                            pricingConfig = pricingConfig,
+                            postSaleList = postSaleList,
+                            onOpenNewVisitDialog = { slot ->
+                                slotToBook = slot
+                                showNewVisitDialog = true
+                            },
+                            onOpenPricingSettings = { showPricingDialog = true },
+                            onStartDemo = { visit ->
+                                selectedVisitForDemo = visit
+                                if (visit.waterSource == DemoWaterSource.AGUA_DE_POZO.name) {
+                                    demoWaterSource = DemoWaterSource.AGUA_DE_POZO
+                                } else if (visit.waterSource == DemoWaterSource.AGUA_CORRIENTE.name) {
+                                    demoWaterSource = DemoWaterSource.AGUA_CORRIENTE
+                                }
+                                navigateToTab(PsaWorkspaceTab.LIVE_DEMO)
+                            }
+                        )
+
+                        PsaWorkspaceTab.CONTACTS -> PsaContactsTabContent(
+                            viewModel = viewModel
+                        )
+
+                        PsaWorkspaceTab.BUDGET -> PsaBudgetTabContent(
+                            context = context,
+                            viewModel = viewModel,
+                            pricingConfig = pricingConfig,
+                            activeCountry = activeCountry,
+                            initialHandoff = budgetHandoff,
+                            onRegisterPostSale = { custName, purifierId, purifierName, cycleMonths ->
+                                viewModel.registerPostSaleInstallation(
+                                    customerName = custName,
+                                    customerPhone = selectedVisitForDemo?.phone ?: "",
+                                    purifierId = purifierId,
+                                    purifierName = purifierName,
+                                    replacementCycleMonths = cycleMonths,
+                                    visitId = selectedVisitForDemo?.id ?: ""
+                                )
+                            },
+                            onOpenPricingSettings = { showPricingDialog = true }
+                        )
+
+                        PsaWorkspaceTab.STOCK -> PsaStockTabContent(
+                            context = context,
+                            pricingConfig = pricingConfig,
+                            activeCountry = activeCountry,
+                            onOpenPortalSync = { showPortalDialog = true }
+                        )
+
+                        PsaWorkspaceTab.SCRIPTS -> PsaScriptsTabContent(
+                            context = context,
+                            viewModel = viewModel,
+                            scheduleSlots = scheduleSlots
+                        )
+
+                        PsaWorkspaceTab.LIVE_DEMO -> PsaClientDemoSection(
+                            pricingConfig = pricingConfig,
+                            activeCountry = activeCountry,
+                            isFullscreenPresentation = false,
+                            initialWaterSource = demoWaterSource,
+                            onWaterSourceChange = { demoWaterSource = it },
+                            initialTapCart = tapCartQuantities,
+                            onTapCartChange = { tapCartQuantities = it },
+                            initialWellCart = wellCartQuantities,
+                            onWellCartChange = { wellCartQuantities = it },
+                            onOpenFullscreen = { showPresentationMode = true },
+                            onRequestCartBudget = { items, mode ->
+                                budgetHandoff = DemoToBudgetHandoff(
+                                    purifierId = items.firstOrNull()?.purifierId ?: "senior4",
+                                    items = items,
+                                    paymentMode = mode
+                                )
+                                navigateToTab(PsaWorkspaceTab.BUDGET)
+                            },
+                            activeVisit = selectedVisitForDemo,
+                            onClearActiveVisit = { selectedVisitForDemo = null },
+                            onSaveDiagnosticToVisit = { visit, source, chlorine, hardness, liters, cartText, photoPath ->
+                                viewModel.saveDemoSnapshotToVisit(
+                                    context = context,
+                                    visit = visit,
+                                    chlorinePpm = chlorine,
+                                    waterSource = source,
+                                    hardnessPpm = hardness,
+                                    realLitersPerDay = liters,
+                                    cartSummary = cartText,
+                                    testPhotoPath = photoPath
+                                )
+                            }
+                        )
+
+                        PsaWorkspaceTab.AI_MEMORY -> PsaAiMemoryTabContent(
+                            context = context,
+                            viewModel = viewModel,
+                            allKnowledge = allKnowledge
                         )
                     }
-                )
-
-                PsaWorkspaceTab.AI_MEMORY -> PsaAiMemoryTabContent(
-                    context = context,
-                    viewModel = viewModel,
-                    allKnowledge = allKnowledge
-                )
+                }
             }
         }
     }
@@ -589,7 +675,7 @@ fun PsaWorkspaceScreen(
                     items = items,
                     paymentMode = mode
                 )
-                activeTab = PsaWorkspaceTab.BUDGET
+                navigateToTab(PsaWorkspaceTab.BUDGET)
             },
             activeVisit = selectedVisitForDemo,
             onClearActiveVisit = { selectedVisitForDemo = null },
@@ -616,7 +702,8 @@ fun PsaWorkspaceScreen(
             onDismiss = { showAdvisorQuiz = false },
             onSelectRecommended = { model ->
                 selectedPurifierForWorkspace = model
-                activeTab = PsaWorkspaceTab.LIVE_DEMO
+                showAdvisorQuiz = false
+                navigateToTab(PsaWorkspaceTab.LIVE_DEMO)
             }
         )
     }
@@ -676,7 +763,10 @@ private fun PsaAgendaTabContent(
     onStartDemo: (PsaHomeVisit) -> Unit
 ) {
     val allVisits by viewModel.allPsaVisits.collectAsState()
+    val allLeads by viewModel.allPsaLeads.collectAsState()
     val isLargeFont = LocalIsLargeFontMode.current
+    var agendaSearchQuery by remember { mutableStateOf("") }
+    var agendaSearchScope by remember { mutableStateOf(AgendaSearchScope.ALL) }
     var showNewPostSaleDialog by remember { mutableStateOf(false) }
     var postSaleDialogVisit by remember { mutableStateOf<PsaHomeVisit?>(null) }
     var postSaleCustomerName by remember { mutableStateOf("") }
@@ -686,6 +776,28 @@ private fun PsaAgendaTabContent(
     var postSaleCycleMonths by remember { mutableIntStateOf(12) }
     var postSaleNotes by remember { mutableStateOf("") }
     var showUrgentPostSaleOnly by remember { mutableStateOf(false) }
+
+    val displayDatesByKey = remember(uniqueDates) {
+        uniqueDates.toMap()
+    }
+    val isSearchingAgenda = agendaSearchQuery.isNotBlank()
+    val matchingVisits = remember(allVisits, agendaSearchQuery, agendaSearchScope, displayDatesByKey) {
+        if (!isSearchingAgenda) emptyList()
+        else PsaAgendaSearchHelper.filterVisits(allVisits, agendaSearchQuery, agendaSearchScope, displayDatesByKey)
+    }
+    val matchingLeads = remember(allLeads, agendaSearchQuery, agendaSearchScope) {
+        if (!isSearchingAgenda) emptyList()
+        else PsaAgendaSearchHelper.filterLeads(allLeads, agendaSearchQuery, agendaSearchScope)
+    }
+    val matchingDates = remember(uniqueDates, agendaSearchQuery, agendaSearchScope) {
+        if (!isSearchingAgenda || agendaSearchScope == AgendaSearchScope.NAME) emptyList()
+        else PsaAgendaSearchHelper.filterUniqueDates(uniqueDates, agendaSearchQuery)
+    }
+    val matchingPostSale = remember(postSaleList, agendaSearchQuery, agendaSearchScope) {
+        if (!isSearchingAgenda) emptyList()
+        else PsaAgendaSearchHelper.filterPostSale(postSaleList, agendaSearchQuery, agendaSearchScope)
+    }
+    val totalMatchesCount = matchingVisits.size + matchingLeads.size + matchingDates.size + matchingPostSale.size
 
     val openPostSaleForm: (PsaHomeVisit?) -> Unit = { visit ->
         postSaleDialogVisit = visit
@@ -710,6 +822,161 @@ private fun PsaAgendaTabContent(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // 0. Barra de búsqueda en tiempo real por nombre o fecha
+        item {
+            PsaAgendaSearchBar(
+                query = agendaSearchQuery,
+                scope = agendaSearchScope,
+                totalMatchesCount = totalMatchesCount,
+                onQueryChange = { agendaSearchQuery = it },
+                onScopeChange = { agendaSearchScope = it },
+                onClear = {
+                    agendaSearchQuery = ""
+                    agendaSearchScope = AgendaSearchScope.ALL
+                }
+            )
+        }
+
+        if (isSearchingAgenda) {
+            if (matchingDates.isNotEmpty()) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "📅 Días de agenda coincidentes (${matchingDates.size}):",
+                            color = PsaCyanGlow,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(matchingDates) { (dateKey, display) ->
+                                val shortLabel = display.split(" ").take(2).joinToString(" ")
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(SlateCard)
+                                        .border(1.dp, PsaCyanGlow.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            viewModel.setSelectedPsaDate(dateKey)
+                                            agendaSearchQuery = ""
+                                            agendaSearchScope = AgendaSearchScope.ALL
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                        .testTag("psa_search_date_chip_$dateKey")
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = shortLabel,
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                        Text(
+                                            text = dateKey,
+                                            color = PsaCyanGlow,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (matchingVisits.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "🏠 Visitas agendadas (${matchingVisits.size})",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+                items(matchingVisits, key = { "search_visit_${it.id}" }) { visit ->
+                    PsaAgendaSearchVisitCard(
+                        context = context,
+                        visit = visit,
+                        friendlyDateLabel = PsaAgendaSearchHelper.formatFriendlyDate(visit.scheduledDate, displayDatesByKey),
+                        onStartDemo = onStartDemo,
+                        onRegisterPostSale = { selectedVisit -> openPostSaleForm(selectedVisit) }
+                    )
+                }
+            }
+
+            if (matchingLeads.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "📞 Contactos (${matchingLeads.size})",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+                items(matchingLeads, key = { "search_lead_${it.id}" }) { lead ->
+                    PsaAgendaSearchLeadCard(
+                        context = context,
+                        lead = lead,
+                        onScheduleVisitForLead = { onOpenNewVisitDialog(null) }
+                    )
+                }
+            }
+
+            if (matchingPostSale.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "🔧 Posventa y Recambios (${matchingPostSale.size})",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+                items(matchingPostSale, key = { "search_postsale_${it.id}" }) { rec ->
+                    val nowMs = System.currentTimeMillis()
+                    val daysLeft = rec.daysUntilReplacement(nowMs)
+                    val dateFmt = remember { SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()) }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(SlateCard)
+                            .border(1.dp, PsaCyanPrimary.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                            .padding(12.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "👤 ${rec.customerName}",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.5.sp
+                            )
+                            Text(
+                                text = "💧 ${rec.purifierName}",
+                                color = PsaCyanGlow,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "📅 Próximo recambio: ${dateFmt.format(Date(rec.nextReplacementAtMs))} (${daysLeft}d)",
+                                color = TextSecondary,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (totalMatchesCount == 0) {
+                item {
+                    PsaAgendaSearchEmptyState(
+                        query = agendaSearchQuery,
+                        onClear = {
+                            agendaSearchQuery = ""
+                            agendaSearchScope = AgendaSearchScope.ALL
+                        }
+                    )
+                }
+            }
+        } else {
         // 1. Meta Semanal de Citas & Insignias de Logro Card
         item {
             val weeklyStats = PsaScheduleManager.getWeeklyVisitsStats(allVisits, pricingConfig.weeklyVisitsGoal)
@@ -1244,6 +1511,8 @@ private fun PsaAgendaTabContent(
                     }
                 }
             }
+        }
+
         }
 
         item {

@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
 import com.example.data.model.AutomationConfig
+import com.example.data.model.CloudAccessToken
 import com.example.data.model.DeliveryLog
 import com.example.data.model.DeliveryStats
 import com.example.data.model.LiveAutomationProgress
@@ -160,6 +161,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _appErrorsFeedback = MutableStateFlow<String?>(null)
     val appErrorsFeedback: StateFlow<String?> = _appErrorsFeedback.asStateFlow()
 
+    private val _cloudAccessTokens = MutableStateFlow<List<CloudAccessToken>>(emptyList())
+    val cloudAccessTokens: StateFlow<List<CloudAccessToken>> = _cloudAccessTokens.asStateFlow()
+
+    private val _isRefreshingAccessTokens = MutableStateFlow(false)
+    val isRefreshingAccessTokens: StateFlow<Boolean> = _isRefreshingAccessTokens.asStateFlow()
+
+    private val _isRedeemingToken = MutableStateFlow(false)
+    val isRedeemingToken: StateFlow<Boolean> = _isRedeemingToken.asStateFlow()
+
+    private val _accessTokenActionFeedback = MutableStateFlow<String?>(null)
+    val accessTokenActionFeedback: StateFlow<String?> = _accessTokenActionFeedback.asStateFlow()
+
     private var userListenerJob: Job? = null
     private var allUsersListenerJob: Job? = null
     private var roleMatrixListenerJob: Job? = null
@@ -171,6 +184,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var postSaleSyncJob: Job? = null
     private var sellerStatsListenerJob: Job? = null
     private var appErrorsListenerJob: Job? = null
+    private var accessTokensListenerJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var wasAutoPausedByLicenseLock: Boolean = false
     private var hasCheckedAppUpdateOnLaunch: Boolean = false
@@ -1159,6 +1173,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         allUsersListenerJob?.cancel()
         sellerStatsListenerJob?.cancel()
         appErrorsListenerJob?.cancel()
+        accessTokensListenerJob?.cancel()
         if (signedUser.role == "SUPERUSER") {
             allUsersListenerJob = viewModelScope.launch {
                 cloudRepo.observeAllAuthorizedUsers().collect { users ->
@@ -1175,9 +1190,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _appErrors.value = errors
                 }
             }
+            accessTokensListenerJob = viewModelScope.launch {
+                cloudRepo.observeAccessTokens().collect { tokens ->
+                    _cloudAccessTokens.value = tokens
+                }
+            }
         } else {
             _sellerPerformanceBoard.value = emptyList()
             _appErrors.value = emptyList()
+            _cloudAccessTokens.value = emptyList()
         }
 
         workspaceBootstrapJob?.cancel()
@@ -1227,6 +1248,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         postSaleSyncJob?.cancel()
         sellerStatsListenerJob?.cancel()
         appErrorsListenerJob?.cancel()
+        accessTokensListenerJob?.cancel()
         userListenerJob = null
         allUsersListenerJob = null
         roleMatrixListenerJob = null
@@ -1237,6 +1259,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         postSaleSyncJob = null
         sellerStatsListenerJob = null
         appErrorsListenerJob = null
+        accessTokensListenerJob = null
     }
 
     fun flushPendingAppErrorsNow(manualFeedback: Boolean = false) {
@@ -1358,6 +1381,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isCloudGoogleConnected.value = false
         _sellerPerformanceBoard.value = emptyList()
         _appErrors.value = emptyList()
+        _cloudAccessTokens.value = emptyList()
+        _accessTokenActionFeedback.value = null
         _updateLockEvaluation.value = UpdateLockEvaluation(false, 0, "", false)
         viewModelScope.launch {
             repository.cloudTeamRepository?.signOutGoogle()
@@ -1405,6 +1430,127 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     onError(err.message ?: "Error guardando usuario en Firestore.")
                 }
             )
+        }
+    }
+
+    fun clearAccessTokenFeedback() {
+        _accessTokenActionFeedback.value = null
+    }
+
+    fun refreshCloudAccessTokens() {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") return
+        if (_isRefreshingAccessTokens.value) return
+        viewModelScope.launch {
+            _isRefreshingAccessTokens.value = true
+            cloudRepo.fetchAccessTokensOnce().fold(
+                onSuccess = { list ->
+                    _cloudAccessTokens.value = list
+                },
+                onFailure = { err ->
+                    _accessTokenActionFeedback.value = err.message ?: "No se pudieron sincronizar los tokens."
+                }
+            )
+            _isRefreshingAccessTokens.value = false
+        }
+    }
+
+    fun createCloudAccessToken(
+        assignedUsername: String,
+        targetEmail: String,
+        daysGranted: Int,
+        maxDevices: Int,
+        notes: String,
+        onSuccess: (CloudAccessToken) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            onError("Repositorio Firebase no disponible.")
+            return
+        }
+        if (currentUser.value?.role != "SUPERUSER") {
+            onError("Acción restringida al Superusuario.")
+            return
+        }
+        viewModelScope.launch {
+            cloudRepo.createAccessTokenInCloud(
+                assignedUsername = assignedUsername,
+                targetEmailRaw = targetEmail,
+                daysGranted = daysGranted,
+                maxDevices = maxDevices,
+                notes = notes
+            ).fold(
+                onSuccess = { created ->
+                    _cloudAccessTokens.value = listOf(created) +
+                        _cloudAccessTokens.value.filterNot { it.tokenCode == created.tokenCode }
+                    onSuccess(created)
+                },
+                onFailure = { err ->
+                    onError(err.message ?: "Error creando token en Firebase.")
+                }
+            )
+        }
+    }
+
+    fun revokeCloudAccessToken(tokenCode: String) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") return
+        viewModelScope.launch {
+            cloudRepo.revokeAccessTokenInCloud(tokenCode).fold(
+                onSuccess = {
+                    _accessTokenActionFeedback.value = "Token $tokenCode revocado en Firebase."
+                },
+                onFailure = { err ->
+                    _accessTokenActionFeedback.value = err.message ?: "No se pudo revocar el token."
+                }
+            )
+        }
+    }
+
+    fun deleteCloudAccessToken(tokenCode: String) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") return
+        viewModelScope.launch {
+            cloudRepo.deleteAccessTokenInCloud(tokenCode).fold(
+                onSuccess = {
+                    _cloudAccessTokens.value = _cloudAccessTokens.value.filterNot { it.tokenCode == tokenCode }
+                    _accessTokenActionFeedback.value = "Token $tokenCode eliminado."
+                },
+                onFailure = { err ->
+                    _accessTokenActionFeedback.value = err.message ?: "No se pudo eliminar el token."
+                }
+            )
+        }
+    }
+
+    fun redeemAccessToken(
+        tokenCode: String,
+        onSuccess: () -> Unit
+    ) {
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            _accessTokenActionFeedback.value = "Repositorio Firebase no disponible."
+            return
+        }
+        if (_isRedeemingToken.value) return
+        viewModelScope.launch {
+            _isRedeemingToken.value = true
+            _accessTokenActionFeedback.value = null
+            when (val outcome = cloudRepo.redeemAccessTokenForSignedInUser(tokenCode)) {
+                is CloudAuthOutcome.Authorized -> {
+                    _isRedeemingToken.value = false
+                    applyCloudAuthOutcome(outcome, onAuthorized = onSuccess)
+                }
+                is CloudAuthOutcome.Error -> {
+                    _isRedeemingToken.value = false
+                    _accessTokenActionFeedback.value = outcome.message
+                }
+                else -> {
+                    _isRedeemingToken.value = false
+                    applyCloudAuthOutcome(outcome, onAuthorized = onSuccess)
+                }
+            }
         }
     }
 

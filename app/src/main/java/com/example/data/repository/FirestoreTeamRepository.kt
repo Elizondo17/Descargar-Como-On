@@ -10,6 +10,8 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
+import com.example.data.model.CloudAccessToken
+import com.example.data.model.CloudAccessTokenStatus
 import com.example.data.model.PsaContactLead
 import com.example.data.model.PsaHomeVisit
 import com.example.data.model.PsaLeadStatus
@@ -19,6 +21,7 @@ import com.example.data.model.PsaVisitStatus
 import com.example.data.model.RoleVisibilityConfig
 import com.example.data.model.SellerPerformanceStats
 import com.example.data.model.UserAccount
+import java.security.SecureRandom
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -83,6 +86,7 @@ class FirestoreTeamRepository(context: Context) {
         private const val SUBCOLLECTION_POST_SALE = "post_sale"
         private const val COLLECTION_SELLER_STATS = "seller_stats"
         private const val COLLECTION_APP_ERRORS = "AppErrors"
+        private const val COLLECTION_ACCESS_TOKENS = "access_tokens"
         private const val KEY_DEVICE_ID = "persistent_hardware_device_id"
         private const val KEY_LAST_SYNCED_UID = "last_synced_seller_uid"
         const val BOOTSTRAP_ADMIN_EMAIL = "leonelizondo16@gmail.com"
@@ -872,11 +876,13 @@ class FirestoreTeamRepository(context: Context) {
         val updateRequired = (data["updateRequired"] as? Boolean) ?: false
         val requiredVersionCode = ((data["requiredVersionCode"] as? Number)?.toInt() ?: 0).coerceIn(0, 100000)
         val updateLockReason = (data["updateLockReason"] as? String).orEmpty().take(300)
+        val accessToken = (data["accessToken"] as? String).orEmpty().trim().take(64)
+            .ifBlank { "GOOGLE-AUTH" }
 
         return UserAccount(
             id = id,
             username = username,
-            token = "GOOGLE-AUTH",
+            token = accessToken,
             role = role,
             daysGranted = daysGranted,
             validFromMs = validFromMs,
@@ -920,6 +926,7 @@ class FirestoreTeamRepository(context: Context) {
             "updateRequired" to user.updateRequired,
             "requiredVersionCode" to user.requiredVersionCode.coerceIn(0, 100000),
             "updateLockReason" to user.updateLockReason.take(300),
+            "accessToken" to user.token.trim().ifBlank { "GOOGLE-AUTH" }.take(64),
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
@@ -1487,6 +1494,311 @@ class FirestoreTeamRepository(context: Context) {
             appVersionCode = (data["appVersionCode"] as? Number)?.toInt() ?: 1,
             status = (data["status"] as? String).orEmpty().ifBlank { "OPEN" },
             occurredAtMs = occurredAtMs,
+            createdAtMs = createdAtMs,
+            updatedAtMs = updatedAtMs
+        )
+    }
+
+    // =====================================================================
+    // SUPERUSER ACCESS TOKENS & EXPIRATION LICENSING (/access_tokens/{code})
+    // =====================================================================
+
+    fun generateAccessTokenCode(daysGranted: Int): String {
+        val safeDays = daysGranted.coerceIn(1, 3650)
+        val bytes = ByteArray(4)
+        SecureRandom().nextBytes(bytes)
+        val hex = bytes.joinToString("") { "%02X".format(it) }
+        return "PSA-${safeDays}D-$hex"
+    }
+
+    fun observeAccessTokens(): Flow<List<CloudAccessToken>> = callbackFlow {
+        val reg: ListenerRegistration = firestore
+            .collection(COLLECTION_ACCESS_TOKENS)
+            .addSnapshotListener { snapshots, error ->
+                if (error != null) {
+                    handleFirestoreError("observeAccessTokens", error)
+                    return@addSnapshotListener
+                }
+                val list = snapshots?.documents
+                    ?.mapNotNull { parseAccessToken(it) }
+                    .orEmpty()
+                    .sortedByDescending { it.createdAtMs }
+                trySend(list)
+            }
+        awaitClose { reg.remove() }
+    }
+
+    suspend fun fetchAccessTokensOnce(): Result<List<CloudAccessToken>> {
+        return try {
+            val snap = firestore.collection(COLLECTION_ACCESS_TOKENS)
+                .get(Source.SERVER)
+                .await()
+            val list = snap.documents
+                .mapNotNull { parseAccessToken(it) }
+                .sortedByDescending { it.createdAtMs }
+            Result.success(list)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("fetchAccessTokensOnce", e)
+            Result.failure(Exception("No se pudieron cargar los tokens: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun createAccessTokenInCloud(
+        assignedUsername: String,
+        targetEmailRaw: String,
+        daysGranted: Int,
+        maxDevices: Int,
+        notes: String
+    ): Result<CloudAccessToken> {
+        val adminUser = auth.currentUser
+            ?: return Result.failure(
+                IllegalStateException("Conecta tu cuenta Google de Superusuario antes de generar tokens.")
+            )
+        val safeName = assignedUsername.trim().take(80)
+        if (safeName.length < 2) {
+            return Result.failure(IllegalArgumentException("Ingresa un nombre o alias de al menos 2 caracteres."))
+        }
+        val cleanTargetEmail = normalizeEmail(targetEmailRaw)
+        if (cleanTargetEmail.isNotBlank() && !cleanTargetEmail.contains("@")) {
+            return Result.failure(IllegalArgumentException("Si asignas un correo específico, debe ser un email válido."))
+        }
+        val safeDays = daysGranted.coerceIn(1, 3650)
+        val safeDevices = maxDevices.coerceIn(1, 5)
+        val safeNotes = notes.trim().take(300)
+        val tokenCode = generateAccessTokenCode(safeDays)
+        val nowMs = System.currentTimeMillis()
+
+        val payload = hashMapOf<String, Any>(
+            "tokenCode" to tokenCode,
+            "assignedUsername" to safeName,
+            "targetEmail" to cleanTargetEmail,
+            "daysGranted" to safeDays,
+            "maxDevices" to safeDevices,
+            "notes" to safeNotes,
+            "status" to CloudAccessTokenStatus.AVAILABLE.name,
+            "createdByUid" to adminUser.uid,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+
+        return try {
+            firestore.collection(COLLECTION_ACCESS_TOKENS)
+                .document(tokenCode)
+                .set(payload)
+                .await()
+            Result.success(
+                CloudAccessToken(
+                    tokenCode = tokenCode,
+                    assignedUsername = safeName,
+                    targetEmail = cleanTargetEmail,
+                    daysGranted = safeDays,
+                    maxDevices = safeDevices,
+                    notes = safeNotes,
+                    status = CloudAccessTokenStatus.AVAILABLE.name,
+                    createdByUid = adminUser.uid,
+                    createdAtMs = nowMs,
+                    updatedAtMs = nowMs
+                )
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("createAccessTokenInCloud", e)
+            val detail = if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                "Permiso denegado: solo el Superusuario autorizado puede emitir tokens."
+            } else {
+                e.localizedMessage ?: e.code.name
+            }
+            Result.failure(Exception(detail))
+        } catch (e: Exception) {
+            handleFirestoreError("createAccessTokenInCloud", e)
+            Result.failure(Exception("No se pudo generar el token en Firestore: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun revokeAccessTokenInCloud(tokenCodeRaw: String): Result<Unit> {
+        val tokenCode = tokenCodeRaw.trim().uppercase()
+        if (tokenCode.length < 6) {
+            return Result.failure(IllegalArgumentException("Código de token inválido."))
+        }
+        return try {
+            firestore.collection(COLLECTION_ACCESS_TOKENS)
+                .document(tokenCode)
+                .update(
+                    mapOf(
+                        "status" to CloudAccessTokenStatus.REVOKED.name,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("revokeAccessTokenInCloud", e)
+            Result.failure(Exception("No se pudo revocar el token: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun deleteAccessTokenInCloud(tokenCodeRaw: String): Result<Unit> {
+        val tokenCode = tokenCodeRaw.trim().uppercase()
+        if (tokenCode.length < 6) {
+            return Result.failure(IllegalArgumentException("Código de token inválido."))
+        }
+        return try {
+            firestore.collection(COLLECTION_ACCESS_TOKENS)
+                .document(tokenCode)
+                .delete()
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("deleteAccessTokenInCloud", e)
+            Result.failure(Exception("No se pudo eliminar el token: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun redeemAccessTokenForSignedInUser(tokenCodeRaw: String): CloudAuthOutcome {
+        val firebaseUser = auth.currentUser
+            ?: return CloudAuthOutcome.Error("Inicia sesión con Google primero para poder canjear tu token.")
+        val emailKey = normalizeEmail(firebaseUser.email.orEmpty())
+        if (emailKey.isBlank()) {
+            return CloudAuthOutcome.Error("La cuenta de Google no devolvió un correo electrónico válido.")
+        }
+
+        val tokenCode = tokenCodeRaw.trim().uppercase()
+        if (!tokenCode.matches(Regex("^[A-Z0-9_\\-]{6,40}$"))) {
+            return CloudAuthOutcome.Error("Formato de token inválido. Verifica los caracteres del código recibido.")
+        }
+
+        return try {
+            val tokenRef = firestore.collection(COLLECTION_ACCESS_TOKENS).document(tokenCode)
+            val tokenSnap = tokenRef.get(Source.SERVER).await()
+            if (!tokenSnap.exists()) {
+                return CloudAuthOutcome.Error("El token '$tokenCode' no existe o fue eliminado.")
+            }
+
+            val parsedToken = parseAccessToken(tokenSnap)
+                ?: return CloudAuthOutcome.Error("El token tiene un formato incompatible en el servidor.")
+
+            when (parsedToken.parsedStatus) {
+                CloudAccessTokenStatus.REVOKED -> {
+                    return CloudAuthOutcome.Error("Este token fue revocado por el Administrador.")
+                }
+                CloudAccessTokenStatus.REDEEMED -> {
+                    val usedBy = parsedToken.redeemedByEmail.ifBlank { "otro usuario" }
+                    return CloudAuthOutcome.Error("Este token ya fue canjeado anteriormente por $usedBy.")
+                }
+                CloudAccessTokenStatus.AVAILABLE -> Unit
+            }
+
+            if (parsedToken.targetEmail.isNotBlank() && parsedToken.targetEmail != emailKey) {
+                return CloudAuthOutcome.Error(
+                    "Este token fue asignado exclusivamente a ${parsedToken.targetEmail} (tu sesión es $emailKey)."
+                )
+            }
+
+            val userRef = firestore.collection(COLLECTION_USERS).document(emailKey)
+            val existingUserSnap = userRef.get(Source.SERVER).await()
+            if (existingUserSnap.exists()) {
+                return CloudAuthOutcome.Error(
+                    "El correo $emailKey ya tiene un registro en la nube. Toca 'Verificar ahora' o pide renovación al Administrador."
+                )
+            }
+
+            val safeDays = parsedToken.daysGranted.coerceIn(1, 3650)
+            val safeMaxDevices = parsedToken.maxDevices.coerceIn(1, 5)
+            val nowMs = System.currentTimeMillis()
+            val expiresAtMs = nowMs + (safeDays.toLong() * 24L * 60L * 60L * 1000L)
+            val deviceId = getOrCreateDeviceId()
+            val deviceLabel = getDeviceHardwareLabel()
+            val resolvedName = parsedToken.assignedUsername.trim()
+                .ifBlank { firebaseUser.displayName?.trim().orEmpty() }
+                .ifBlank { emailKey.substringBefore("@") }
+                .take(80)
+
+            val newUser = UserAccount(
+                id = "op_${UUID.randomUUID().toString().take(8)}",
+                username = resolvedName,
+                token = tokenCode,
+                role = "OPERATOR",
+                daysGranted = safeDays,
+                validFromMs = nowMs,
+                expiresAtMs = expiresAtMs,
+                isBlocked = false,
+                notes = parsedToken.notes.ifBlank { "Activado con token $tokenCode" }.take(300),
+                createdAt = nowMs,
+                canAccessLegacyModules = false,
+                email = emailKey,
+                maxDevices = safeMaxDevices,
+                boundDeviceIdsSerialized = deviceId,
+                boundDeviceLabelsSerialized = deviceLabel,
+                ownerUid = firebaseUser.uid,
+                lastOnlineVerifiedAtMs = nowMs
+            )
+
+            val batch = firestore.batch()
+            batch.set(userRef, userToCreateMap(newUser))
+            batch.update(
+                tokenRef,
+                mapOf(
+                    "status" to CloudAccessTokenStatus.REDEEMED.name,
+                    "redeemedByEmail" to emailKey,
+                    "redeemedByUid" to firebaseUser.uid,
+                    "redeemedAt" to FieldValue.serverTimestamp(),
+                    "expiresAt" to Timestamp(Date(expiresAtMs)),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            batch.commit().await()
+
+            val verifiedSnap = try {
+                userRef.get(Source.SERVER).await()
+            } catch (_: Exception) {
+                null
+            }
+            val verifiedUser = verifiedSnap?.let { parseUserDocument(it) } ?: newUser
+            val verifiedServerMs = verifiedUser.lastOnlineVerifiedAtMs.takeIf { it > 0L } ?: nowMs
+            CloudAuthOutcome.Authorized(verifiedUser, serverWallMs = verifiedServerMs)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("redeemAccessTokenForSignedInUser", e)
+            val msg = if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                "No se pudo activar el token: verifica que siga disponible o corresponda a tu cuenta."
+            } else {
+                "Error de servidor al canjear token: ${e.localizedMessage ?: e.code.name}"
+            }
+            CloudAuthOutcome.Error(msg)
+        } catch (e: Exception) {
+            handleFirestoreError("redeemAccessTokenForSignedInUser", e)
+            CloudAuthOutcome.Error("Sin conexión con Firebase para validar el token. Intenta nuevamente.")
+        }
+    }
+
+    private fun parseAccessToken(doc: DocumentSnapshot): CloudAccessToken? {
+        val data = doc.data ?: return null
+        val code = (data["tokenCode"] as? String).orEmpty().ifBlank { doc.id }.trim().uppercase()
+        val createdAtMs = doc.getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
+        val updatedAtMs = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: createdAtMs
+        val redeemedAtMs = doc.getTimestamp("redeemedAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
+        val expiresAtMs = (data["expiresAt"] as? Timestamp)?.toDate()?.time ?: 0L
+        return CloudAccessToken(
+            tokenCode = code,
+            assignedUsername = (data["assignedUsername"] as? String).orEmpty(),
+            targetEmail = (data["targetEmail"] as? String).orEmpty().trim().lowercase(),
+            daysGranted = ((data["daysGranted"] as? Number)?.toInt() ?: 30).coerceIn(1, 3650),
+            maxDevices = ((data["maxDevices"] as? Number)?.toInt() ?: 1).coerceIn(1, 5),
+            notes = (data["notes"] as? String).orEmpty(),
+            status = (data["status"] as? String).orEmpty().ifBlank { CloudAccessTokenStatus.AVAILABLE.name },
+            redeemedByEmail = (data["redeemedByEmail"] as? String).orEmpty().trim().lowercase(),
+            redeemedByUid = (data["redeemedByUid"] as? String).orEmpty(),
+            redeemedAtMs = redeemedAtMs,
+            expiresAtMs = expiresAtMs,
+            createdByUid = (data["createdByUid"] as? String).orEmpty(),
             createdAtMs = createdAtMs,
             updatedAtMs = updatedAtMs
         )

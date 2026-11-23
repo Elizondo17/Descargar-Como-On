@@ -838,7 +838,7 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                 }
             }
 
-            if (!hasSeenSetupGuide && currentTab != AppTab.DASHBOARD) {
+            if (!hasSeenSetupGuide && currentTab != AppTab.DASHBOARD && currentTab != AppTab.PSA_WORKSPACE) {
                 Surface(
                     color = IndigoPrimary.copy(alpha = 0.14f),
                     border = androidx.compose.foundation.BorderStroke(1.dp, IndigoPrimary.copy(alpha = 0.45f)),
@@ -913,6 +913,7 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                         )
                         AppTab.PSA_WORKSPACE -> com.example.ui.screens.psa.PsaWorkspaceScreen(
                             viewModel = viewModel,
+                            onOpenHelpGuide = { showSettingsAndHelpDialog = true },
                             onClose = { currentTab = AppTab.DASHBOARD }
                         )
                         AppTab.SUPERUSER -> SuperuserScreen(
@@ -1258,6 +1259,8 @@ fun ContactSuperuserDialog(
             "Hola Administrador, reinicié el teléfono y mi usuario (${user.username} • $identityLabel) requiere validar el acceso en Como On."
         AccessLockReason.CLOCK_TAMPER_DETECTED ->
             "Hola Administrador, mi usuario (${user.username} • $identityLabel) presenta una verificación de fecha/hora en Como On. ¿Podrías ayudarme a revisarlo?"
+        AccessLockReason.UPDATE_REQUIRED ->
+            "Hola Administrador, ya actualicé / estoy intentando actualizar Como On (usuario: ${user.username} • $identityLabel). ¿Podrías verificar o rehabilitar mi acceso?"
         AccessLockReason.ADMIN_BLOCKED, AccessLockReason.NONE ->
             "Hola Administrador, mi usuario (${user.username} • $identityLabel) se encuentra restringido en Como On. ¿Podrías revisar mi acceso?"
     }

@@ -76,6 +76,10 @@
           "type": "string",
           "description": "Optional reason or note shown on the update lock screen"
         },
+        "accessToken": {
+          "type": "string",
+          "description": "Optional Cloud Access Token code used to activate this license"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -102,6 +106,84 @@
         "boundDeviceIds",
         "boundDeviceLabels",
         "ownerUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AccessToken": {
+      "title": "AccessToken",
+      "description": "Cloud access token issued by the Superuser with assigned validity days for new users, redeemable once via Google Sign-In.",
+      "type": "object",
+      "properties": {
+        "tokenCode": {
+          "type": "string",
+          "description": "Unique uppercase access token code matching document ID"
+        },
+        "assignedUsername": {
+          "type": "string",
+          "description": "Display name assigned to the new user"
+        },
+        "targetEmail": {
+          "type": "string",
+          "description": "Optional Google email restriction (empty string allows any authenticated Google account with the token)"
+        },
+        "daysGranted": {
+          "type": "integer",
+          "description": "License validity days assigned by Superuser (1..3650)"
+        },
+        "maxDevices": {
+          "type": "integer",
+          "description": "Maximum allowed hardware devices (1..5)"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional admin notes or zone"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["AVAILABLE", "REDEEMED", "REVOKED"],
+          "description": "Token lifecycle state"
+        },
+        "redeemedByEmail": {
+          "type": "string",
+          "description": "Google email that redeemed the token"
+        },
+        "redeemedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID that redeemed the token"
+        },
+        "redeemedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when token was redeemed"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Calculated expiration timestamp when redeemed"
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "Superuser UID that issued the token"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp written via FieldValue.serverTimestamp()"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last modification timestamp written via FieldValue.serverTimestamp()"
+        }
+      },
+      "required": [
+        "tokenCode",
+        "assignedUsername",
+        "daysGranted",
+        "maxDevices",
+        "status",
+        "createdByUid",
         "createdAt",
         "updatedAt"
       ]
@@ -318,6 +400,10 @@
     "/authorized_users/{emailKey}": {
       "schema": { "$ref": "#/entities/AuthorizedUser" },
       "description": "Google email allowlist, expiration, remote blocking, update lock, and multi-device hardware binding per user"
+    },
+    "/access_tokens/{tokenCode}": {
+      "schema": { "$ref": "#/entities/AccessToken" },
+      "description": "Cloud access tokens issued by Superuser with assigned validity days and single-use redemption state"
     },
     "/team_config/{configId}": {
       "schema": { "$ref": "#/entities/TeamConfig" },

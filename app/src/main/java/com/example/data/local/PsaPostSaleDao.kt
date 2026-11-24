@@ -13,6 +13,9 @@ interface PsaPostSaleDao {
     @Query("SELECT * FROM psa_post_sale_installations ORDER BY nextReplacementAtMs ASC")
     fun getAllInstallations(): Flow<List<PsaPostSaleInstallation>>
 
+    @Query("SELECT * FROM psa_post_sale_installations ORDER BY nextReplacementAtMs ASC")
+    suspend fun getAllInstallationsOnce(): List<PsaPostSaleInstallation>
+
     @Query("SELECT * FROM psa_post_sale_installations WHERE id = :id LIMIT 1")
     suspend fun getInstallationById(id: String): PsaPostSaleInstallation?
 

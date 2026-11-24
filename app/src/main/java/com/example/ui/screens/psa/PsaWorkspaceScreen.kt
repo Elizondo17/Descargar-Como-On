@@ -718,6 +718,8 @@ private fun PsaAgendaTabContent(
     val allLeads by viewModel.allPsaLeads.collectAsState()
     val scheduleIntervalConfig by viewModel.scheduleIntervalConfig.collectAsState()
     val visitDurationOverrides by viewModel.visitDurationOverrides.collectAsState()
+    val isNetworkOnline by viewModel.isNetworkOnline.collectAsState()
+    val agendaSyncStatus by viewModel.agendaSyncStatus.collectAsState()
     val isLargeFont = LocalIsLargeFontMode.current
     var agendaSearchQuery by remember { mutableStateOf("") }
     var agendaSearchScope by remember { mutableStateOf(AgendaSearchScope.ALL) }
@@ -810,6 +812,15 @@ private fun PsaAgendaTabContent(
                     agendaSearchQuery = ""
                     agendaSearchScope = AgendaSearchScope.ALL
                 }
+            )
+        }
+
+        // 0b. Estado de almacenamiento local Room y sincronización automática Firestore
+        item {
+            PsaAgendaSyncStatusBanner(
+                isNetworkOnline = isNetworkOnline,
+                syncStatus = agendaSyncStatus,
+                onManualSyncClick = { viewModel.syncAgendaWithCloudNow() }
             )
         }
 

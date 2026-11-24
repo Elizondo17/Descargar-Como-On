@@ -37,6 +37,7 @@ import com.example.data.model.PsaAchievementBadge
 import com.example.data.model.PsaPostSaleInstallation
 import com.example.data.model.PsaPostSaleStatus
 import com.example.data.model.SellerPerformanceStats
+import com.example.data.model.AgendaSyncStatus
 import com.example.data.model.ApprovalStatus
 import com.example.data.model.HierarchyRequest
 import com.example.data.model.HierarchyRequestStatus
@@ -257,6 +258,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val allPostSaleInstallations: StateFlow<List<PsaPostSaleInstallation>> = repository.allPostSaleInstallations
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val pendingAgendaSyncCount: StateFlow<Int> = repository.pendingAgendaSyncCount
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val agendaSyncStatus: StateFlow<AgendaSyncStatus> = combine(
+        repository.agendaSyncStatus,
+        repository.pendingAgendaSyncCount
+    ) { status, pendingCount ->
+        status.copy(pendingCount = pendingCount)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AgendaSyncStatus())
 
     private val _sellerPerformanceBoard = MutableStateFlow<List<SellerPerformanceStats>>(emptyList())
     val sellerPerformanceBoard: StateFlow<List<SellerPerformanceStats>> = _sellerPerformanceBoard.asStateFlow()
@@ -680,6 +691,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (currentUser.value != null) {
                     recheckCloudAccessNow(silentIfNotLocked = true)
                     flushPendingAppErrorsNow(manualFeedback = false)
+                    syncAgendaWithCloudNow()
                 }
             },
             onNetworkLost = {
@@ -810,6 +822,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (online) {
                 recheckCloudAccessNow(silentIfNotLocked = true)
                 flushPendingAppErrorsNow(manualFeedback = false)
+                syncAgendaWithCloudNow()
                 if (!hasCheckedAppUpdateOnLaunch) {
                     checkForAppUpdate(isAutomaticStartup = true)
                 }
@@ -1390,26 +1403,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (lastUid.isNotBlank() && lastUid != firebaseUid) {
                     repository.wipeSellerLocalWorkspace()
                 } else {
-                    withTimeoutOrNull(2500L) {
-                        repository.syncLocalWorkspaceUpToCloud(firebaseUid)
-                    }
+                    repository.syncLocalWorkspaceUpToCloud(firebaseUid)
                 }
                 cloudRepo.setLastSyncedUid(firebaseUid)
 
                 contactsSyncJob = launch {
-                    cloudRepo.observeSellerContacts(firebaseUid).collect { remoteLeads ->
-                        repository.replaceRemoteContacts(remoteLeads)
+                    cloudRepo.observeSellerContacts(firebaseUid).collect { snapshot ->
+                        repository.replaceRemoteContacts(snapshot.items, isFromCache = snapshot.isFromCache)
                     }
                 }
                 visitsSyncJob = launch {
-                    cloudRepo.observeSellerVisits(firebaseUid).collect { remoteVisits ->
-                        repository.replaceRemoteVisits(remoteVisits)
+                    cloudRepo.observeSellerVisits(firebaseUid).collect { snapshot ->
+                        repository.replaceRemoteVisits(snapshot.items, isFromCache = snapshot.isFromCache)
                         refreshPsaSchedule(getApplication())
                     }
                 }
                 postSaleSyncJob = launch {
-                    cloudRepo.observeSellerPostSale(firebaseUid).collect { remotePostSale ->
-                        repository.replaceRemotePostSale(remotePostSale)
+                    cloudRepo.observeSellerPostSale(firebaseUid).collect { snapshot ->
+                        repository.replaceRemotePostSale(snapshot.items, isFromCache = snapshot.isFromCache)
                     }
                 }
             }
@@ -2505,6 +2516,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deletePsaVisit(visitId)
             refreshPsaSchedule(context)
+        }
+    }
+
+    fun syncAgendaWithCloudNow() {
+        val online = LicenseSecurityGuard.hasInternetConnectivity(getApplication())
+        _isNetworkOnline.value = online
+        if (!online) return
+        val uid = repository.cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
+        if (uid.isBlank()) return
+        viewModelScope.launch {
+            repository.syncPendingAgendaWithFirestore(explicitUid = uid, publishStats = true)
+            refreshPsaSchedule(getApplication())
         }
     }
 

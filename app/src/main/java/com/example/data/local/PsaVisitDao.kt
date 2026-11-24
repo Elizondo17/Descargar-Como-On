@@ -14,6 +14,9 @@ interface PsaVisitDao {
     @Query("SELECT * FROM psa_home_visits ORDER BY scheduledDate ASC, scheduledTime ASC")
     fun getAllVisits(): Flow<List<PsaHomeVisit>>
 
+    @Query("SELECT * FROM psa_home_visits ORDER BY scheduledDate ASC, scheduledTime ASC")
+    suspend fun getAllVisitsOnce(): List<PsaHomeVisit>
+
     @Query("SELECT * FROM psa_home_visits WHERE scheduledDate = :dateKey ORDER BY scheduledTime ASC")
     fun getVisitsForDate(dateKey: String): Flow<List<PsaHomeVisit>>
 

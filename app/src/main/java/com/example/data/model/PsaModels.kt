@@ -624,3 +624,38 @@ data class ScheduleIntervalConfig(
     }
 }
 
+enum class AgendaSyncEntityType {
+    VISIT,
+    POST_SALE,
+    CONTACT
+}
+
+enum class AgendaSyncOperation {
+    UPSERT,
+    DELETE
+}
+
+@Entity(tableName = "pending_agenda_sync")
+data class PendingAgendaSyncEntity(
+    @PrimaryKey
+    val queueKey: String,
+    val entityType: String,
+    val entityId: String,
+    val operation: String,
+    val ownerUid: String = "",
+    val queuedAtMs: Long = System.currentTimeMillis(),
+    val retryCount: Int = 0,
+    val lastError: String = ""
+) {
+    companion object {
+        fun buildKey(type: AgendaSyncEntityType, entityId: String): String =
+            "${type.name}:$entityId"
+    }
+}
+
+data class AgendaSyncStatus(
+    val isSyncing: Boolean = false,
+    val pendingCount: Int = 0,
+    val lastSyncedAtMs: Long = 0L,
+    val lastErrorMessage: String? = null
+)

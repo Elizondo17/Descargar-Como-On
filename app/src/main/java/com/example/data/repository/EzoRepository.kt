@@ -1,11 +1,16 @@
 package com.example.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.example.data.local.AppDatabase
+import com.example.data.model.AgendaSyncEntityType
+import com.example.data.model.AgendaSyncOperation
+import com.example.data.model.AgendaSyncStatus
 import com.example.data.model.BusinessProfile
 import com.example.data.model.DeliveryLog
 import com.example.data.model.DeliveryStats
 import com.example.data.model.HierarchyTreeBuilder
+import com.example.data.model.PendingAgendaSyncEntity
 import com.example.data.model.ScannedChat
 import com.example.data.model.ScriptFolder
 import com.example.data.model.ScriptItem
@@ -20,19 +25,27 @@ import com.example.data.model.RoleVisibilityConfig
 import com.example.data.model.SellerPerformanceStats
 import com.example.data.model.UserAccount
 import com.example.data.model.UserToken
+import com.example.util.LicenseSecurityGuard
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 class EzoRepository(
     private val database: AppDatabase,
-    private val context: Context? = null
+    private val context: Context? = null,
+    private val cloudGatewayOverride: AgendaCloudSyncGateway? = null,
+    private val networkOnlineProvider: (() -> Boolean)? = null
 ) {
 
     private val userDao = database.userDao()
@@ -46,12 +59,25 @@ class EzoRepository(
     private val psaVisitDao = database.psaVisitDao()
     private val psaContactDao = database.psaContactDao()
     private val psaPostSaleDao = database.psaPostSaleDao()
+    private val agendaSyncDao = database.agendaSyncDao()
 
     private val prefs = context?.getSharedPreferences("como_on_auth_prefs", Context.MODE_PRIVATE)
-    val cloudTeamRepository: FirestoreTeamRepository? = context?.let { FirestoreTeamRepository(it) }
+    val cloudTeamRepository: FirestoreTeamRepository? =
+        if (cloudGatewayOverride == null) context?.let { FirestoreTeamRepository(it) } else null
+    private val activeCloudGateway: AgendaCloudSyncGateway?
+        get() = cloudGatewayOverride ?: cloudTeamRepository
+
+    private val agendaSyncMutex = Mutex()
+    private val agendaSyncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _currentUser = MutableStateFlow<UserAccount?>(null)
     val currentUser = _currentUser.asStateFlow()
+
+    private val _agendaSyncStatus = MutableStateFlow(AgendaSyncStatus())
+    val agendaSyncStatus: StateFlow<AgendaSyncStatus> = _agendaSyncStatus.asStateFlow()
+
+    val pendingAgendaSyncCount: Flow<Int> = agendaSyncDao.observePendingCount()
+    val pendingAgendaSyncOps: Flow<List<PendingAgendaSyncEntity>> = agendaSyncDao.observePendingOps()
 
     fun setCurrentUser(user: UserAccount?) {
         _currentUser.value = user
@@ -1080,121 +1106,164 @@ class EzoRepository(
         com.example.service.GeminiSalesService.customApiKey = cleanKey
     }
 
-    // PSA Home Visits Operations
-    suspend fun insertPsaVisit(visit: PsaHomeVisit) {
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        val withOwner = if (uid.isNotBlank()) visit.copy(ownerUid = uid, updatedAtMs = System.currentTimeMillis()) else visit
-        psaVisitDao.insertVisit(withOwner)
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.upsertSellerVisit(uid, withOwner)
-                publishCurrentSellerStats()
+    private fun isDeviceOnlineForAgendaSync(): Boolean {
+        return networkOnlineProvider?.invoke()
+            ?: (context?.let { LicenseSecurityGuard.hasInternetConnectivity(it) } ?: true)
+    }
+
+    private fun currentAgendaOwnerUid(): String = activeCloudGateway?.currentOwnerUid().orEmpty()
+
+    private suspend fun enqueueAgendaSyncOpLocked(
+        type: AgendaSyncEntityType,
+        entityId: String,
+        operation: AgendaSyncOperation,
+        ownerUid: String,
+        queuedAtMs: Long = System.currentTimeMillis()
+    ) {
+        if (entityId.isBlank()) return
+        agendaSyncDao.enqueueOp(
+            PendingAgendaSyncEntity(
+                queueKey = PendingAgendaSyncEntity.buildKey(type, entityId),
+                entityType = type.name,
+                entityId = entityId,
+                operation = operation.name,
+                ownerUid = ownerUid,
+                queuedAtMs = queuedAtMs,
+                retryCount = 0,
+                lastError = ""
+            )
+        )
+    }
+
+    private suspend fun refreshAgendaPendingStatusCount() {
+        val pending = agendaSyncDao.getAllPendingOpsOnce().size
+        _agendaSyncStatus.value = _agendaSyncStatus.value.copy(pendingCount = pending)
+    }
+
+    private fun triggerBackgroundAgendaSyncIfOnline() {
+        val uid = currentAgendaOwnerUid()
+        if (uid.isNotBlank() && isDeviceOnlineForAgendaSync()) {
+            agendaSyncScope.launch {
+                syncPendingAgendaWithFirestore(explicitUid = uid)
             }
         }
+    }
+
+    // PSA Home Visits Operations (Room Offline-First + Persistent Outbox -> Firestore Auto-Sync)
+    suspend fun insertPsaVisit(visit: PsaHomeVisit) {
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        val withOwner = if (uid.isNotBlank()) visit.copy(ownerUid = uid, updatedAtMs = now) else visit.copy(updatedAtMs = now)
+        database.withTransaction {
+            psaVisitDao.insertVisit(withOwner)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.VISIT, withOwner.id, AgendaSyncOperation.UPSERT, uid, now)
+        }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun updatePsaVisit(visit: PsaHomeVisit) {
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        val withOwner = if (uid.isNotBlank()) visit.copy(ownerUid = uid, updatedAtMs = System.currentTimeMillis()) else visit
-        psaVisitDao.updateVisit(withOwner)
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.upsertSellerVisit(uid, withOwner)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        val withOwner = if (uid.isNotBlank()) visit.copy(ownerUid = uid, updatedAtMs = now) else visit.copy(updatedAtMs = now)
+        database.withTransaction {
+            psaVisitDao.insertVisit(withOwner)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.VISIT, withOwner.id, AgendaSyncOperation.UPSERT, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun deletePsaVisit(visitId: String) {
-        psaVisitDao.deleteVisitById(visitId)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.deleteSellerVisit(uid, visitId)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaVisitDao.deleteVisitById(visitId)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.VISIT, visitId, AgendaSyncOperation.DELETE, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
-    // PSA Post-Sale Filter Replacements Operations
+    // PSA Post-Sale Filter Replacements Operations (Room Offline-First + Persistent Outbox)
     suspend fun insertPostSaleInstallation(record: PsaPostSaleInstallation) {
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        val withOwner = if (uid.isNotBlank()) record.copy(ownerUid = uid, updatedAtMs = System.currentTimeMillis()) else record
-        psaPostSaleDao.insertInstallation(withOwner)
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.upsertPostSaleRecord(uid, withOwner)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        val withOwner = if (uid.isNotBlank()) record.copy(ownerUid = uid, updatedAtMs = now) else record.copy(updatedAtMs = now)
+        database.withTransaction {
+            psaPostSaleDao.insertInstallation(withOwner)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.POST_SALE, withOwner.id, AgendaSyncOperation.UPSERT, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun updatePostSaleInstallation(record: PsaPostSaleInstallation) {
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        val withOwner = if (uid.isNotBlank()) record.copy(ownerUid = uid, updatedAtMs = System.currentTimeMillis()) else record
-        psaPostSaleDao.updateInstallation(withOwner)
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.upsertPostSaleRecord(uid, withOwner)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        val withOwner = if (uid.isNotBlank()) record.copy(ownerUid = uid, updatedAtMs = now) else record.copy(updatedAtMs = now)
+        database.withTransaction {
+            psaPostSaleDao.insertInstallation(withOwner)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.POST_SALE, withOwner.id, AgendaSyncOperation.UPSERT, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun deletePostSaleInstallation(recordId: String) {
-        psaPostSaleDao.deleteById(recordId)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.deletePostSaleRecord(uid, recordId)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaPostSaleDao.deleteById(recordId)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.POST_SALE, recordId, AgendaSyncOperation.DELETE, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
-    // PSA Contact Leads & Interactions Operations
+    // PSA Contact Leads & Interactions Operations (Room Offline-First + Persistent Outbox)
     suspend fun insertPsaLead(lead: com.example.data.model.PsaContactLead) {
-        psaContactDao.insertLead(lead)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.upsertSellerContact(uid, lead)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaContactDao.insertLead(lead)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.CONTACT, lead.id, AgendaSyncOperation.UPSERT, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun updatePsaLead(lead: com.example.data.model.PsaContactLead) {
-        psaContactDao.updateLead(lead)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.upsertSellerContact(uid, lead)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaContactDao.insertLead(lead)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.CONTACT, lead.id, AgendaSyncOperation.UPSERT, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun deletePsaLead(lead: com.example.data.model.PsaContactLead) {
-        psaContactDao.deleteLead(lead)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.deleteSellerContact(uid, lead.id)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaContactDao.deleteLead(lead)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.CONTACT, lead.id, AgendaSyncOperation.DELETE, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun deletePsaLeadById(id: String) {
-        psaContactDao.deleteLeadById(id)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.deleteSellerContact(uid, id)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaContactDao.deleteLeadById(id)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.CONTACT, id, AgendaSyncOperation.DELETE, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun logContactInteraction(
@@ -1205,16 +1274,16 @@ class EzoRepository(
         rescheduleDate: String = ""
     ) {
         val dateKey = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+        val now = System.currentTimeMillis()
         val interaction = com.example.data.model.PsaContactInteraction(
             leadId = lead.id,
             leadName = lead.name,
             channel = channel,
             result = result,
             dateKey = dateKey,
-            timestampMs = System.currentTimeMillis(),
+            timestampMs = now,
             note = note
         )
-        psaContactDao.insertInteraction(interaction)
 
         val newCalls = if (channel == "CALL") lead.callAttemptsCount + 1 else lead.callAttemptsCount
         val newMessages = if (channel == "MESSAGE") lead.messageAttemptsCount + 1 else lead.messageAttemptsCount
@@ -1229,20 +1298,20 @@ class EzoRepository(
         val updatedLead = lead.copy(
             callAttemptsCount = newCalls,
             messageAttemptsCount = newMessages,
-            lastContactDateMs = System.currentTimeMillis(),
+            lastContactDateMs = now,
             lastContactChannel = channel,
             status = newStatus,
             rescheduleDate = if (rescheduleDate.isNotBlank()) rescheduleDate else lead.rescheduleDate,
             rescheduleNote = if (note.isNotBlank()) note else lead.rescheduleNote
         )
-        psaContactDao.updateLead(updatedLead)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudTeamRepository?.upsertSellerContact(uid, updatedLead)
-                publishCurrentSellerStats()
-            }
+        val uid = currentAgendaOwnerUid()
+        database.withTransaction {
+            psaContactDao.insertInteraction(interaction)
+            psaContactDao.insertLead(updatedLead)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.CONTACT, updatedLead.id, AgendaSyncOperation.UPSERT, uid, now)
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun batchUpdatePsaLeadsStatus(
@@ -1269,14 +1338,16 @@ class EzoRepository(
                 }
             )
         }
-        psaContactDao.updateLeads(updated)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                updated.forEach { cloudTeamRepository?.upsertSellerContact(uid, it) }
-                publishCurrentSellerStats()
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaContactDao.updateLeads(updated)
+            updated.forEach {
+                enqueueAgendaSyncOpLocked(AgendaSyncEntityType.CONTACT, it.id, AgendaSyncOperation.UPSERT, uid, now)
             }
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun batchReschedulePsaLeads(
@@ -1294,34 +1365,42 @@ class EzoRepository(
                 rescheduleNote = if (rescheduleNote.isNotBlank()) rescheduleNote.trim() else lead.rescheduleNote
             )
         }
-        psaContactDao.updateLeads(updated)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                updated.forEach { cloudTeamRepository?.upsertSellerContact(uid, it) }
-                publishCurrentSellerStats()
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaContactDao.updateLeads(updated)
+            updated.forEach {
+                enqueueAgendaSyncOpLocked(AgendaSyncEntityType.CONTACT, it.id, AgendaSyncOperation.UPSERT, uid, now)
             }
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     suspend fun batchDeletePsaLeads(leadIds: List<String>) {
         if (leadIds.isEmpty()) return
-        psaContactDao.deleteLeadsByIds(leadIds)
-        val uid = cloudTeamRepository?.getCurrentFirebaseUser()?.uid.orEmpty()
-        if (uid.isNotBlank()) {
-            CoroutineScope(Dispatchers.IO).launch {
-                leadIds.forEach { cloudTeamRepository?.deleteSellerContact(uid, it) }
-                publishCurrentSellerStats()
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            psaContactDao.deleteLeadsByIds(leadIds)
+            leadIds.forEach {
+                enqueueAgendaSyncOpLocked(AgendaSyncEntityType.CONTACT, it, AgendaSyncOperation.DELETE, uid, now)
             }
         }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
     }
 
     // Per-Seller Cloud Cache Synchronization Helpers
     suspend fun wipeSellerLocalWorkspace() {
-        psaVisitDao.clearAllVisits()
-        psaContactDao.clearAllLeads()
-        psaContactDao.clearAllInteractions()
-        psaPostSaleDao.clearAll()
+        database.withTransaction {
+            psaVisitDao.clearAllVisits()
+            psaContactDao.clearAllLeads()
+            psaContactDao.clearAllInteractions()
+            psaPostSaleDao.clearAll()
+            agendaSyncDao.clearAll()
+        }
+        _agendaSyncStatus.value = AgendaSyncStatus()
     }
 
     suspend fun wipeSellerLocalWorkspaceAndCaches() {
@@ -1336,47 +1415,300 @@ class EzoRepository(
         }
     }
 
-    suspend fun replaceRemoteContacts(leads: List<PsaContactLead>) {
-        psaContactDao.clearAllLeads()
-        if (leads.isNotEmpty()) {
-            psaContactDao.insertLeads(leads)
+    /**
+     * Merges remote Firestore contacts into Room while strictly preserving
+     * locally created/edited pending contacts and suppressing locally deleted tombstones.
+     */
+    suspend fun replaceRemoteContacts(leads: List<PsaContactLead>, isFromCache: Boolean = false) {
+        if (isFromCache && leads.isEmpty()) return
+        database.withTransaction {
+            val pendingOps = agendaSyncDao.getPendingOpsByTypeOnce(AgendaSyncEntityType.CONTACT.name)
+            val pendingUpsertIds = pendingOps
+                .filter { it.operation == AgendaSyncOperation.UPSERT.name }
+                .map { it.entityId }
+                .toSet()
+            val pendingDeleteIds = pendingOps
+                .filter { it.operation == AgendaSyncOperation.DELETE.name }
+                .map { it.entityId }
+                .toSet()
+
+            val localById = psaContactDao.getAllLeadsOnce().associateBy { it.id }
+            val preservedLocalUpserts = pendingUpsertIds.mapNotNull { localById[it] }
+            val remoteFiltered = leads.filter { it.id !in pendingDeleteIds && it.id !in pendingUpsertIds }
+            val merged = (remoteFiltered + preservedLocalUpserts).distinctBy { it.id }
+
+            psaContactDao.clearAllLeads()
+            if (merged.isNotEmpty()) {
+                psaContactDao.insertLeads(merged)
+            }
         }
     }
 
-    suspend fun replaceRemoteVisits(visits: List<PsaHomeVisit>) {
-        psaVisitDao.clearAllVisits()
-        if (visits.isNotEmpty()) {
-            psaVisitDao.insertVisits(visits)
+    /**
+     * Merges remote Firestore visits into Room while strictly preserving
+     * offline Room visits/edits pending sync and preventing resurrection of deleted visits.
+     */
+    suspend fun replaceRemoteVisits(visits: List<PsaHomeVisit>, isFromCache: Boolean = false) {
+        if (isFromCache && visits.isEmpty()) return
+        database.withTransaction {
+            val pendingOps = agendaSyncDao.getPendingOpsByTypeOnce(AgendaSyncEntityType.VISIT.name)
+            val pendingUpsertIds = pendingOps
+                .filter { it.operation == AgendaSyncOperation.UPSERT.name }
+                .map { it.entityId }
+                .toSet()
+            val pendingDeleteIds = pendingOps
+                .filter { it.operation == AgendaSyncOperation.DELETE.name }
+                .map { it.entityId }
+                .toSet()
+
+            val localById = psaVisitDao.getAllVisitsOnce().associateBy { it.id }
+            val preservedLocalUpserts = pendingUpsertIds.mapNotNull { localById[it] }
+            val remoteFiltered = visits.filter { it.id !in pendingDeleteIds && it.id !in pendingUpsertIds }
+            val merged = (remoteFiltered + preservedLocalUpserts).distinctBy { it.id }
+
+            psaVisitDao.clearAllVisits()
+            if (merged.isNotEmpty()) {
+                psaVisitDao.insertVisits(merged)
+            }
         }
     }
 
-    suspend fun replaceRemotePostSale(records: List<PsaPostSaleInstallation>) {
-        psaPostSaleDao.clearAll()
-        if (records.isNotEmpty()) {
-            psaPostSaleDao.insertAll(records)
+    /**
+     * Merges remote Firestore post-sale installations into Room while strictly preserving
+     * offline Room changes pending sync and suppressing locally deleted tombstones.
+     */
+    suspend fun replaceRemotePostSale(records: List<PsaPostSaleInstallation>, isFromCache: Boolean = false) {
+        if (isFromCache && records.isEmpty()) return
+        database.withTransaction {
+            val pendingOps = agendaSyncDao.getPendingOpsByTypeOnce(AgendaSyncEntityType.POST_SALE.name)
+            val pendingUpsertIds = pendingOps
+                .filter { it.operation == AgendaSyncOperation.UPSERT.name }
+                .map { it.entityId }
+                .toSet()
+            val pendingDeleteIds = pendingOps
+                .filter { it.operation == AgendaSyncOperation.DELETE.name }
+                .map { it.entityId }
+                .toSet()
+
+            val localById = psaPostSaleDao.getAllInstallationsOnce().associateBy { it.id }
+            val preservedLocalUpserts = pendingUpsertIds.mapNotNull { localById[it] }
+            val remoteFiltered = records.filter { it.id !in pendingDeleteIds && it.id !in pendingUpsertIds }
+            val merged = (remoteFiltered + preservedLocalUpserts).distinctBy { it.id }
+
+            psaPostSaleDao.clearAll()
+            if (merged.isNotEmpty()) {
+                psaPostSaleDao.insertAll(merged)
+            }
+        }
+    }
+
+    private suspend fun enqueuePreExistingUnboundOrLegacyRecords(uid: String) {
+        val outboxPrefKey = "agenda_outbox_bootstrapped_$uid"
+        val alreadyBootstrapped = prefs?.getBoolean(outboxPrefKey, false) ?: false
+        val existingOpsByKey = agendaSyncDao.getAllPendingOpsOnce().associateBy { it.queueKey }
+        val toEnqueue = mutableListOf<PendingAgendaSyncEntity>()
+        val now = System.currentTimeMillis()
+
+        val localVisits = psaVisitDao.getAllVisitsOnce()
+        localVisits.forEach { visit ->
+            val key = PendingAgendaSyncEntity.buildKey(AgendaSyncEntityType.VISIT, visit.id)
+            if (key !in existingOpsByKey && (visit.ownerUid.isBlank() || !alreadyBootstrapped)) {
+                toEnqueue += PendingAgendaSyncEntity(
+                    queueKey = key,
+                    entityType = AgendaSyncEntityType.VISIT.name,
+                    entityId = visit.id,
+                    operation = AgendaSyncOperation.UPSERT.name,
+                    ownerUid = uid,
+                    queuedAtMs = visit.updatedAtMs.takeIf { it > 0L } ?: now
+                )
+            }
+        }
+
+        val localPostSale = psaPostSaleDao.getAllInstallationsOnce()
+        localPostSale.forEach { rec ->
+            val key = PendingAgendaSyncEntity.buildKey(AgendaSyncEntityType.POST_SALE, rec.id)
+            if (key !in existingOpsByKey && (rec.ownerUid.isBlank() || !alreadyBootstrapped)) {
+                toEnqueue += PendingAgendaSyncEntity(
+                    queueKey = key,
+                    entityType = AgendaSyncEntityType.POST_SALE.name,
+                    entityId = rec.id,
+                    operation = AgendaSyncOperation.UPSERT.name,
+                    ownerUid = uid,
+                    queuedAtMs = rec.updatedAtMs.takeIf { it > 0L } ?: now
+                )
+            }
+        }
+
+        if (!alreadyBootstrapped) {
+            val localLeads = psaContactDao.getAllLeadsOnce()
+            localLeads.forEach { lead ->
+                val key = PendingAgendaSyncEntity.buildKey(AgendaSyncEntityType.CONTACT, lead.id)
+                if (key !in existingOpsByKey) {
+                    toEnqueue += PendingAgendaSyncEntity(
+                        queueKey = key,
+                        entityType = AgendaSyncEntityType.CONTACT.name,
+                        entityId = lead.id,
+                        operation = AgendaSyncOperation.UPSERT.name,
+                        ownerUid = uid,
+                        queuedAtMs = lead.createdAtMs.takeIf { it > 0L } ?: now
+                    )
+                }
+            }
+            prefs?.edit()?.putBoolean(outboxPrefKey, true)?.apply()
+        }
+
+        if (toEnqueue.isNotEmpty()) {
+            agendaSyncDao.enqueueOps(toEnqueue)
+        }
+    }
+
+    /**
+     * Flushes all queued offline Agenda mutations (upserts & deletions) from Room to Firestore
+     * automatically upon connectivity recovery or manual retry, serialized with [agendaSyncMutex].
+     */
+    suspend fun syncPendingAgendaWithFirestore(
+        explicitUid: String = "",
+        publishStats: Boolean = true
+    ): Result<Int> = agendaSyncMutex.withLock {
+        val gateway = activeCloudGateway
+        val uid = explicitUid.ifBlank { gateway?.currentOwnerUid().orEmpty() }
+        if (gateway == null || uid.isBlank()) {
+            refreshAgendaPendingStatusCount()
+            return@withLock Result.success(0)
+        }
+        if (!isDeviceOnlineForAgendaSync()) {
+            refreshAgendaPendingStatusCount()
+            return@withLock Result.success(0)
+        }
+
+        val initialCount = agendaSyncDao.getAllPendingOpsOnce().size
+        _agendaSyncStatus.value = _agendaSyncStatus.value.copy(
+            isSyncing = true,
+            pendingCount = initialCount,
+            lastErrorMessage = null
+        )
+
+        var syncedCount = 0
+        var firstError: Throwable? = null
+
+        try {
+            enqueuePreExistingUnboundOrLegacyRecords(uid)
+            val ops = agendaSyncDao.getAllPendingOpsOnce()
+            _agendaSyncStatus.value = _agendaSyncStatus.value.copy(pendingCount = ops.size)
+
+            for (op in ops) {
+                if (!isDeviceOnlineForAgendaSync()) {
+                    firstError = firstError ?: IllegalStateException("Conexión interrumpida durante la sincronización.")
+                    break
+                }
+                val type = enumValues<AgendaSyncEntityType>().firstOrNull { it.name == op.entityType }
+                val operation = enumValues<AgendaSyncOperation>().firstOrNull { it.name == op.operation }
+                if (type == null || operation == null) {
+                    agendaSyncDao.deleteIfUnchanged(op.queueKey, op.queuedAtMs)
+                    continue
+                }
+
+                val result: Result<Unit> = when (type) {
+                    AgendaSyncEntityType.VISIT -> when (operation) {
+                        AgendaSyncOperation.UPSERT -> {
+                            val localVisit = psaVisitDao.getVisitById(op.entityId)
+                            if (localVisit == null) {
+                                Result.success(Unit)
+                            } else {
+                                val owned = if (localVisit.ownerUid != uid) {
+                                    localVisit.copy(ownerUid = uid).also { psaVisitDao.insertVisit(it) }
+                                } else {
+                                    localVisit
+                                }
+                                gateway.upsertVisit(uid, owned)
+                            }
+                        }
+                        AgendaSyncOperation.DELETE -> gateway.deleteVisit(uid, op.entityId)
+                    }
+
+                    AgendaSyncEntityType.POST_SALE -> when (operation) {
+                        AgendaSyncOperation.UPSERT -> {
+                            val localRecord = psaPostSaleDao.getInstallationById(op.entityId)
+                            if (localRecord == null) {
+                                Result.success(Unit)
+                            } else {
+                                val owned = if (localRecord.ownerUid != uid) {
+                                    localRecord.copy(ownerUid = uid).also { psaPostSaleDao.insertInstallation(it) }
+                                } else {
+                                    localRecord
+                                }
+                                gateway.upsertPostSale(uid, owned)
+                            }
+                        }
+                        AgendaSyncOperation.DELETE -> gateway.deletePostSale(uid, op.entityId)
+                    }
+
+                    AgendaSyncEntityType.CONTACT -> when (operation) {
+                        AgendaSyncOperation.UPSERT -> {
+                            val localLead = psaContactDao.getLeadById(op.entityId)
+                            if (localLead == null) {
+                                Result.success(Unit)
+                            } else {
+                                gateway.upsertContact(uid, localLead)
+                            }
+                        }
+                        AgendaSyncOperation.DELETE -> gateway.deleteContact(uid, op.entityId)
+                    }
+                }
+
+                if (result.isSuccess) {
+                    agendaSyncDao.deleteIfUnchanged(op.queueKey, op.queuedAtMs)
+                    syncedCount++
+                } else {
+                    val err = result.exceptionOrNull()
+                    agendaSyncDao.markAttemptFailed(
+                        queueKey = op.queueKey,
+                        expectedQueuedAtMs = op.queuedAtMs,
+                        retryCount = op.retryCount + 1,
+                        lastError = (err?.localizedMessage ?: "Error de sincronización").take(300)
+                    )
+                    if (firstError == null) {
+                        firstError = err
+                    }
+                }
+            }
+
+            if (syncedCount > 0 && publishStats && cloudTeamRepository != null) {
+                runCatching { publishCurrentSellerStats() }
+            }
+
+            val remaining = agendaSyncDao.getAllPendingOpsOnce().size
+            _agendaSyncStatus.value = AgendaSyncStatus(
+                isSyncing = false,
+                pendingCount = remaining,
+                lastSyncedAtMs = if (syncedCount > 0 || remaining == 0) {
+                    System.currentTimeMillis()
+                } else {
+                    _agendaSyncStatus.value.lastSyncedAtMs
+                },
+                lastErrorMessage = firstError?.localizedMessage
+            )
+            if (firstError != null) Result.failure(firstError) else Result.success(syncedCount)
+        } catch (ce: CancellationException) {
+            _agendaSyncStatus.value = _agendaSyncStatus.value.copy(
+                isSyncing = false,
+                pendingCount = runCatching { agendaSyncDao.getAllPendingOpsOnce().size }.getOrDefault(initialCount)
+            )
+            throw ce
+        } catch (e: Exception) {
+            val remaining = runCatching { agendaSyncDao.getAllPendingOpsOnce().size }.getOrDefault(initialCount)
+            _agendaSyncStatus.value = _agendaSyncStatus.value.copy(
+                isSyncing = false,
+                pendingCount = remaining,
+                lastErrorMessage = e.localizedMessage
+            )
+            Result.failure(e)
         }
     }
 
     suspend fun syncLocalWorkspaceUpToCloud(uid: String) {
-        val cloudRepo = cloudTeamRepository ?: return
-        if (uid.isBlank() || cloudRepo.getCurrentFirebaseUser()?.uid != uid) return
-        val localLeads = psaContactDao.getAllLeads().first()
-        localLeads.forEach { lead ->
-            cloudRepo.upsertSellerContact(uid, lead)
-        }
-        val localVisits = psaVisitDao.getAllVisits().first()
-        localVisits.forEach { visit ->
-            val owned = if (visit.ownerUid != uid) visit.copy(ownerUid = uid) else visit
-            if (owned !== visit) psaVisitDao.insertVisit(owned)
-            cloudRepo.upsertSellerVisit(uid, owned)
-        }
-        val localPostSale = psaPostSaleDao.getAllInstallations().first()
-        localPostSale.forEach { rec ->
-            val owned = if (rec.ownerUid != uid) rec.copy(ownerUid = uid) else rec
-            if (owned !== rec) psaPostSaleDao.insertInstallation(owned)
-            cloudRepo.upsertPostSaleRecord(uid, owned)
-        }
-        publishCurrentSellerStats()
+        if (uid.isBlank() || currentAgendaOwnerUid() != uid) return
+        syncPendingAgendaWithFirestore(explicitUid = uid, publishStats = true)
     }
 
     suspend fun publishCurrentSellerStats() {

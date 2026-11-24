@@ -67,7 +67,7 @@ data class CloudUserSnapshotEvent(
     val serverWallMs: Long
 )
 
-class FirestoreTeamRepository(context: Context) {
+class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
 
     private val appContext = context.applicationContext
     private val firestore: FirebaseFirestore by lazy {
@@ -107,6 +107,26 @@ class FirestoreTeamRepository(context: Context) {
     fun normalizeEmail(email: String): String = email.trim().lowercase()
 
     fun getCurrentFirebaseUser(): FirebaseUser? = auth.currentUser
+
+    override fun currentOwnerUid(): String = auth.currentUser?.uid.orEmpty()
+
+    override suspend fun upsertVisit(ownerUid: String, visit: PsaHomeVisit): Result<Unit> =
+        upsertSellerVisit(ownerUid, visit)
+
+    override suspend fun deleteVisit(ownerUid: String, visitId: String): Result<Unit> =
+        deleteSellerVisit(ownerUid, visitId)
+
+    override suspend fun upsertPostSale(ownerUid: String, record: PsaPostSaleInstallation): Result<Unit> =
+        upsertPostSaleRecord(ownerUid, record)
+
+    override suspend fun deletePostSale(ownerUid: String, recordId: String): Result<Unit> =
+        deletePostSaleRecord(ownerUid, recordId)
+
+    override suspend fun upsertContact(ownerUid: String, lead: PsaContactLead): Result<Unit> =
+        upsertSellerContact(ownerUid, lead)
+
+    override suspend fun deleteContact(ownerUid: String, contactId: String): Result<Unit> =
+        deleteSellerContact(ownerUid, contactId)
 
     fun getOrCreateDeviceId(): String {
         val existing = devicePrefs.getString(KEY_DEVICE_ID, null)
@@ -1044,7 +1064,7 @@ class FirestoreTeamRepository(context: Context) {
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w(TAG, "upsertSellerContact failed: ${e.message}")
+            handleFirestoreError("upsertSellerContact", e)
             Result.failure(e)
         }
     }
@@ -1059,12 +1079,12 @@ class FirestoreTeamRepository(context: Context) {
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w(TAG, "deleteSellerContact failed: ${e.message}")
+            handleFirestoreError("deleteSellerContact", e)
             Result.failure(e)
         }
     }
 
-    fun observeSellerContacts(ownerUid: String): Flow<List<PsaContactLead>> = callbackFlow {
+    fun observeSellerContacts(ownerUid: String): Flow<SellerWorkspaceSnapshot<PsaContactLead>> = callbackFlow {
         if (ownerUid.isBlank()) {
             close()
             return@callbackFlow
@@ -1073,13 +1093,18 @@ class FirestoreTeamRepository(context: Context) {
             .collection(COLLECTION_WORKSPACES)
             .document(ownerUid)
             .collection(SUBCOLLECTION_CONTACTS)
-            .addSnapshotListener { snap, error ->
+            .addSnapshotListener(MetadataChanges.INCLUDE) { snap, error ->
                 if (error != null) {
-                    Log.w(TAG, "observeSellerContacts error: ${error.message}")
+                    handleFirestoreError("observeSellerContacts", error)
                     return@addSnapshotListener
                 }
                 val list = snap?.documents?.mapNotNull { parseSellerContact(it) }.orEmpty()
-                trySend(list)
+                trySend(
+                    SellerWorkspaceSnapshot(
+                        items = list,
+                        isFromCache = snap?.metadata?.isFromCache ?: false
+                    )
+                )
             }
         awaitClose { reg.remove() }
     }
@@ -1120,7 +1145,7 @@ class FirestoreTeamRepository(context: Context) {
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w(TAG, "upsertSellerVisit failed: ${e.message}")
+            handleFirestoreError("upsertSellerVisit", e)
             Result.failure(e)
         }
     }
@@ -1135,12 +1160,12 @@ class FirestoreTeamRepository(context: Context) {
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w(TAG, "deleteSellerVisit failed: ${e.message}")
+            handleFirestoreError("deleteSellerVisit", e)
             Result.failure(e)
         }
     }
 
-    fun observeSellerVisits(ownerUid: String): Flow<List<PsaHomeVisit>> = callbackFlow {
+    fun observeSellerVisits(ownerUid: String): Flow<SellerWorkspaceSnapshot<PsaHomeVisit>> = callbackFlow {
         if (ownerUid.isBlank()) {
             close()
             return@callbackFlow
@@ -1149,13 +1174,18 @@ class FirestoreTeamRepository(context: Context) {
             .collection(COLLECTION_WORKSPACES)
             .document(ownerUid)
             .collection(SUBCOLLECTION_VISITS)
-            .addSnapshotListener { snap, error ->
+            .addSnapshotListener(MetadataChanges.INCLUDE) { snap, error ->
                 if (error != null) {
-                    Log.w(TAG, "observeSellerVisits error: ${error.message}")
+                    handleFirestoreError("observeSellerVisits", error)
                     return@addSnapshotListener
                 }
                 val list = snap?.documents?.mapNotNull { parseSellerVisit(it) }.orEmpty()
-                trySend(list)
+                trySend(
+                    SellerWorkspaceSnapshot(
+                        items = list,
+                        isFromCache = snap?.metadata?.isFromCache ?: false
+                    )
+                )
             }
         awaitClose { reg.remove() }
     }
@@ -1193,7 +1223,7 @@ class FirestoreTeamRepository(context: Context) {
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w(TAG, "upsertPostSaleRecord failed: ${e.message}")
+            handleFirestoreError("upsertPostSaleRecord", e)
             Result.failure(e)
         }
     }
@@ -1208,12 +1238,12 @@ class FirestoreTeamRepository(context: Context) {
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w(TAG, "deletePostSaleRecord failed: ${e.message}")
+            handleFirestoreError("deletePostSaleRecord", e)
             Result.failure(e)
         }
     }
 
-    fun observeSellerPostSale(ownerUid: String): Flow<List<PsaPostSaleInstallation>> = callbackFlow {
+    fun observeSellerPostSale(ownerUid: String): Flow<SellerWorkspaceSnapshot<PsaPostSaleInstallation>> = callbackFlow {
         if (ownerUid.isBlank()) {
             close()
             return@callbackFlow
@@ -1222,13 +1252,18 @@ class FirestoreTeamRepository(context: Context) {
             .collection(COLLECTION_WORKSPACES)
             .document(ownerUid)
             .collection(SUBCOLLECTION_POST_SALE)
-            .addSnapshotListener { snap, error ->
+            .addSnapshotListener(MetadataChanges.INCLUDE) { snap, error ->
                 if (error != null) {
-                    Log.w(TAG, "observeSellerPostSale error: ${error.message}")
+                    handleFirestoreError("observeSellerPostSale", error)
                     return@addSnapshotListener
                 }
                 val list = snap?.documents?.mapNotNull { parsePostSaleRecord(it) }.orEmpty()
-                trySend(list)
+                trySend(
+                    SellerWorkspaceSnapshot(
+                        items = list,
+                        isFromCache = snap?.metadata?.isFromCache ?: false
+                    )
+                )
             }
         awaitClose { reg.remove() }
     }

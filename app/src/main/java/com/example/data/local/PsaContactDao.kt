@@ -16,6 +16,9 @@ interface PsaContactDao {
     @Query("SELECT * FROM psa_contact_leads ORDER BY createdAtMs DESC")
     fun getAllLeads(): Flow<List<PsaContactLead>>
 
+    @Query("SELECT * FROM psa_contact_leads ORDER BY createdAtMs DESC")
+    suspend fun getAllLeadsOnce(): List<PsaContactLead>
+
     @Query("SELECT * FROM psa_contact_leads WHERE id = :id LIMIT 1")
     suspend fun getLeadById(id: String): PsaContactLead?
 

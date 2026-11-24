@@ -345,4 +345,87 @@ class PsaScheduleTest {
         assertEquals("🥉", stats.badgeIcon)
         assertTrue(stats.motivationalMessage.contains("Faltan 8 citas"))
     }
+
+    @Test
+    fun `custom schedule interval config generates visit blocks with travel buffer and avoids overlap`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val config = com.example.data.model.ScheduleIntervalConfig(
+            workStartTime = "09:00",
+            workEndTime = "17:30",
+            demoDurationMinutes = 90,
+            travelBufferMinutes = 60
+        )
+        PsaScheduleManager.saveScheduleIntervalConfig(context, config)
+        val loadedConfig = PsaScheduleManager.getScheduleIntervalConfig(context)
+        assertEquals("09:00", loadedConfig.workStartTime)
+        assertEquals("17:30", loadedConfig.workEndTime)
+        assertEquals(90, loadedConfig.demoDurationMinutes)
+        assertEquals(60, loadedConfig.travelBufferMinutes)
+
+        val generated = PsaScheduleManager.generateDailySlotsFromInterval(config)
+        // 09:00-10:30 (+60m -> 11:30), 11:30-13:00 (+60m -> 14:00), 14:00-15:30 (+60m -> 16:30) => 3 blocks fit
+        assertEquals(listOf("09:00" to "10:30", "11:30" to "13:00", "14:00" to "15:30"), generated)
+
+        val todayKey = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+        val bookedVisit = PsaHomeVisit(
+            id = "visit-interval-1",
+            customerName = "Sofía Álvarez",
+            phone = "1122334455",
+            address = "Corrientes 1800",
+            neighborhood = "Centro",
+            scheduledDate = todayKey,
+            scheduledTime = "11:30",
+            modelInterest = "PSA Senior 4",
+            status = PsaVisitStatus.CONFIRMADA
+        )
+        val daySlots = PsaScheduleManager.generateScheduleForDays(
+            context = context,
+            daysAhead = 1,
+            bookedVisits = listOf(bookedVisit)
+        )
+        val visitSlot = daySlots.find { it.startTime == "11:30" }
+        assertNotNull(visitSlot)
+        assertEquals(PsaSlotStatus.BOOKED, visitSlot!!.status)
+        assertEquals("13:00", visitSlot.endTime)
+
+        // Immediately after 13:00 there should be a synthetic 60m travel/delay BUFFER slot 13:00-14:00
+        val bufferSlot = daySlots.find { it.status == PsaSlotStatus.BUFFER && it.startTime == "13:00" }
+        assertNotNull("Expected 60m travel buffer block 13:00-14:00", bufferSlot)
+        assertEquals("14:00", bufferSlot!!.endTime)
+    }
+
+    @Test
+    fun `agenda status filter chips group pendientes realizadas and canceladas and filter by time window`() {
+        val dateKey = "2026-11-23"
+        val visits = listOf(
+            PsaHomeVisit(id = "v1", customerName = "Ana", phone = "", address = "", scheduledDate = dateKey, scheduledTime = "09:30", status = PsaVisitStatus.AGENDADA),
+            PsaHomeVisit(id = "v2", customerName = "Beto", phone = "", address = "", scheduledDate = dateKey, scheduledTime = "14:00", status = PsaVisitStatus.CONFIRMADA),
+            PsaHomeVisit(id = "v3", customerName = "Carla", phone = "", address = "", scheduledDate = dateKey, scheduledTime = "16:30", status = PsaVisitStatus.CERRADA_EXITO),
+            PsaHomeVisit(id = "v4", customerName = "Diego", phone = "", address = "", scheduledDate = dateKey, scheduledTime = "19:00", status = PsaVisitStatus.CANCELADA),
+            PsaHomeVisit(id = "v5", customerName = "Elena", phone = "", address = "", scheduledDate = dateKey, scheduledTime = "20:00", status = PsaVisitStatus.REPROGRAMAR)
+        )
+
+        val counts = PsaScheduleManager.countVisitsByStatusForDate(visits, dateKey)
+        assertEquals(5, counts[com.example.data.model.AgendaVisitStatusFilter.ALL])
+        assertEquals(3, counts[com.example.data.model.AgendaVisitStatusFilter.PENDING])
+        assertEquals(1, counts[com.example.data.model.AgendaVisitStatusFilter.COMPLETED])
+        assertEquals(1, counts[com.example.data.model.AgendaVisitStatusFilter.CANCELLED])
+
+        val pendingAfternoon = PsaScheduleManager.filterVisitsByStatusAndWindow(
+            visits = visits,
+            selectedDateKey = dateKey,
+            statusFilter = com.example.data.model.AgendaVisitStatusFilter.PENDING,
+            timeWindow = com.example.data.model.AgendaTimeWindowFilter.AFTERNOON
+        )
+        assertEquals(listOf("v2"), pendingAfternoon.map { it.id })
+
+        val cancelledEvening = PsaScheduleManager.filterVisitsByStatusAndWindow(
+            visits = visits,
+            selectedDateKey = dateKey,
+            statusFilter = com.example.data.model.AgendaVisitStatusFilter.CANCELLED,
+            timeWindow = com.example.data.model.AgendaTimeWindowFilter.EVENING
+        )
+        assertEquals(listOf("v4"), cancelledEvening.map { it.id })
+    }
 }
+

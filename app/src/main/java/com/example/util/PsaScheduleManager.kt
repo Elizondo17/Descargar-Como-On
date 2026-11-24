@@ -1,6 +1,8 @@
 package com.example.util
 
 import android.content.Context
+import com.example.data.model.AgendaTimeWindowFilter
+import com.example.data.model.AgendaVisitStatusFilter
 import com.example.data.model.PsaHomeVisit
 import com.example.data.model.PsaSavingsResult
 import com.example.data.model.PsaScriptCategory
@@ -10,6 +12,7 @@ import com.example.data.model.PsaTimeSlot
 import com.example.data.model.PsaVisitStatus
 import com.example.data.model.PsaMessageTone
 import com.example.data.model.SalesKnowledgeItem
+import com.example.data.model.ScheduleIntervalConfig
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -31,18 +34,185 @@ object PsaScheduleManager {
     private val shortDayFormat = SimpleDateFormat("EEE d", Locale("es", "ES"))
 
     /**
-     * Calculates an end time 1 hour after the start time in HH:mm format.
+     * Parses "HH:mm" into minutes since midnight, returning null if malformed.
      */
-    fun calculateEndTime(startTime: String): String {
+    fun parseTimeMinutes(timeText: String): Int? {
         return try {
-            val parts = startTime.split(":")
+            val parts = timeText.trim().split(":")
+            if (parts.size != 2) return null
             val hour = parts[0].trim().toInt()
             val minute = parts[1].trim().toInt()
-            val newHour = (hour + 1) % 24
-            String.format(Locale.US, "%02d:%02d", newHour, minute)
+            if (hour !in 0..23 || minute !in 0..59) return null
+            hour * 60 + minute
         } catch (_: Exception) {
-            startTime
+            null
         }
+    }
+
+    /**
+     * Formats minutes since midnight into "HH:mm" (wrapped to 24h).
+     */
+    fun formatMinutesAsTime(totalMinutes: Int): String {
+        val safe = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60)
+        val hour = safe / 60
+        val minute = safe % 60
+        return String.format(Locale.US, "%02d:%02d", hour, minute)
+    }
+
+    /**
+     * Shifts "HH:mm" by [deltaMinutes], clamped cleanly inside [00:00..23:59].
+     */
+    fun shiftTimeClamped(timeText: String, deltaMinutes: Int, fallback: String = "09:00"): String {
+        val base = parseTimeMinutes(timeText) ?: parseTimeMinutes(fallback) ?: (9 * 60)
+        val shifted = (base + deltaMinutes).coerceIn(0, 23 * 60 + 59)
+        return formatMinutesAsTime(shifted)
+    }
+
+    /**
+     * Calculates an end time [durationMinutes] after the start time in HH:mm format.
+     */
+    fun calculateEndTime(startTime: String, durationMinutes: Int = 60): String {
+        val startMin = parseTimeMinutes(startTime) ?: return startTime
+        val safeDuration = durationMinutes.coerceIn(15, 240)
+        return formatMinutesAsTime(startMin + safeDuration)
+    }
+
+    fun getScheduleIntervalConfig(context: Context): ScheduleIntervalConfig {
+        val prefs = context.getSharedPreferences("psa_schedule_prefs", Context.MODE_PRIVATE)
+        val json = prefs.getString("schedule_interval_config_json", null) ?: return ScheduleIntervalConfig()
+        return try {
+            val obj = org.json.JSONObject(json)
+            ScheduleIntervalConfig(
+                workStartTime = obj.optString("workStartTime", "09:00"),
+                workEndTime = obj.optString("workEndTime", "20:30"),
+                demoDurationMinutes = obj.optInt("demoDurationMinutes", 60).coerceIn(15, 240),
+                travelBufferMinutes = obj.optInt("travelBufferMinutes", 60).coerceIn(0, 180)
+            )
+        } catch (_: Exception) {
+            ScheduleIntervalConfig()
+        }
+    }
+
+    fun hasCustomIntervalConfig(context: Context): Boolean {
+        val prefs = context.getSharedPreferences("psa_schedule_prefs", Context.MODE_PRIVATE)
+        return prefs.getBoolean("has_custom_interval_config", false)
+    }
+
+    fun saveScheduleIntervalConfig(context: Context, config: ScheduleIntervalConfig) {
+        val cleanStart = parseTimeMinutes(config.workStartTime)?.let { formatMinutesAsTime(it) } ?: "09:00"
+        val cleanEnd = parseTimeMinutes(config.workEndTime)?.let { formatMinutesAsTime(it) } ?: "20:30"
+        val sanitized = config.copy(
+            workStartTime = cleanStart,
+            workEndTime = cleanEnd,
+            demoDurationMinutes = config.demoDurationMinutes.coerceIn(15, 240),
+            travelBufferMinutes = config.travelBufferMinutes.coerceIn(0, 180)
+        )
+        val obj = org.json.JSONObject().apply {
+            put("workStartTime", sanitized.workStartTime)
+            put("workEndTime", sanitized.workEndTime)
+            put("demoDurationMinutes", sanitized.demoDurationMinutes)
+            put("travelBufferMinutes", sanitized.travelBufferMinutes)
+        }
+        val generatedSlots = generateDailySlotsFromInterval(sanitized)
+        context.getSharedPreferences("psa_schedule_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("schedule_interval_config_json", obj.toString())
+            .putBoolean("has_custom_interval_config", true)
+            .apply()
+        saveDailySlots(context, generatedSlots)
+    }
+
+    fun getVisitDurationOverrides(context: Context): Map<String, Int> {
+        val prefs = context.getSharedPreferences("psa_schedule_prefs", Context.MODE_PRIVATE)
+        val json = prefs.getString("visit_duration_overrides_json", null) ?: return emptyMap()
+        return try {
+            val obj = org.json.JSONObject(json)
+            val result = mutableMapOf<String, Int>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val minutes = obj.optInt(key, -1)
+                if (minutes in 15..240) {
+                    result[key] = minutes
+                }
+            }
+            result
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    fun saveVisitDurationOverride(context: Context, visitId: String, durationMinutes: Int) {
+        if (visitId.isBlank()) return
+        val prefs = context.getSharedPreferences("psa_schedule_prefs", Context.MODE_PRIVATE)
+        val current = getVisitDurationOverrides(context).toMutableMap()
+        current[visitId] = durationMinutes.coerceIn(15, 240)
+        val obj = org.json.JSONObject()
+        current.forEach { (id, mins) -> obj.put(id, mins) }
+        prefs.edit().putString("visit_duration_overrides_json", obj.toString()).apply()
+    }
+
+    /**
+     * Generates daily [start to end] time blocks within [config.workStartTime..config.workEndTime],
+     * spacing each candidate block by [config.demoDurationMinutes] + [config.travelBufferMinutes].
+     */
+    fun generateDailySlotsFromInterval(config: ScheduleIntervalConfig): List<Pair<String, String>> {
+        val startMin = parseTimeMinutes(config.workStartTime) ?: (9 * 60)
+        val rawEndMin = parseTimeMinutes(config.workEndTime) ?: (20 * 60 + 30)
+        val duration = config.demoDurationMinutes.coerceIn(15, 240)
+        val buffer = config.travelBufferMinutes.coerceIn(0, 180)
+        val endMin = if (rawEndMin >= startMin + duration) rawEndMin else (startMin + duration).coerceAtMost(23 * 60 + 59)
+
+        val step = (duration + buffer).coerceAtLeast(15)
+        val result = mutableListOf<Pair<String, String>>()
+        var cursor = startMin
+        while (cursor + duration <= endMin && result.size < 24) {
+            result.add(formatMinutesAsTime(cursor) to formatMinutesAsTime(cursor + duration))
+            cursor += step
+        }
+        return if (result.isEmpty()) listOf(formatMinutesAsTime(startMin) to formatMinutesAsTime(startMin + duration)) else result
+    }
+
+    fun matchesTimeWindow(startTime: String, window: AgendaTimeWindowFilter): Boolean {
+        if (window == AgendaTimeWindowFilter.ALL) return true
+        val startMin = parseTimeMinutes(startTime) ?: return true
+        return when (window) {
+            AgendaTimeWindowFilter.ALL -> true
+            AgendaTimeWindowFilter.MORNING -> startMin < 13 * 60
+            AgendaTimeWindowFilter.AFTERNOON -> startMin in (13 * 60) until (18 * 60)
+            AgendaTimeWindowFilter.EVENING -> startMin >= 18 * 60
+        }
+    }
+
+    fun filterVisitsByStatusAndWindow(
+        visits: List<PsaHomeVisit>,
+        selectedDateKey: String,
+        statusFilter: AgendaVisitStatusFilter,
+        timeWindow: AgendaTimeWindowFilter = AgendaTimeWindowFilter.ALL
+    ): List<PsaHomeVisit> {
+        return visits.asSequence()
+            .filter { selectedDateKey.isBlank() || it.scheduledDate == selectedDateKey }
+            .filter { statusFilter.matchesVisitStatus(it.status) }
+            .filter { matchesTimeWindow(it.scheduledTime, timeWindow) }
+            .sortedWith(compareBy<PsaHomeVisit> { it.scheduledDate }.thenBy { it.scheduledTime })
+            .toList()
+    }
+
+    fun countVisitsByStatusForDate(
+        visits: List<PsaHomeVisit>,
+        selectedDateKey: String,
+        timeWindow: AgendaTimeWindowFilter = AgendaTimeWindowFilter.ALL
+    ): Map<AgendaVisitStatusFilter, Int> {
+        val scoped = visits.filter {
+            (selectedDateKey.isBlank() || it.scheduledDate == selectedDateKey) &&
+                matchesTimeWindow(it.scheduledTime, timeWindow)
+        }
+        return mapOf(
+            AgendaVisitStatusFilter.ALL to scoped.size,
+            AgendaVisitStatusFilter.PENDING to scoped.count { AgendaVisitStatusFilter.PENDING.matchesVisitStatus(it.status) },
+            AgendaVisitStatusFilter.COMPLETED to scoped.count { AgendaVisitStatusFilter.COMPLETED.matchesVisitStatus(it.status) },
+            AgendaVisitStatusFilter.CANCELLED to scoped.count { AgendaVisitStatusFilter.CANCELLED.matchesVisitStatus(it.status) }
+        )
     }
 
     /**
@@ -95,9 +265,37 @@ object PsaScheduleManager {
     ): List<PsaTimeSlot> {
         val prefs = context.getSharedPreferences("psa_schedule_prefs", Context.MODE_PRIVATE)
         val blockedIds = prefs.getStringSet("blocked_slot_ids", emptySet()) ?: emptySet()
+        val intervalConfig = getScheduleIntervalConfig(context)
+        val useIntervalEngine = hasCustomIntervalConfig(context)
         val dailySlots = getDailySlots(context)
+        val visitDurations = getVisitDurationOverrides(context)
 
-        val calendar = Calendar.getInstance()
+        return generateScheduleForDaysWithConfig(
+            daysAhead = daysAhead,
+            bookedVisits = bookedVisits,
+            dailySlots = dailySlots,
+            blockedIds = blockedIds,
+            intervalConfig = intervalConfig,
+            useIntervalBufferWindows = useIntervalEngine,
+            visitDurationsById = visitDurations
+        )
+    }
+
+    /**
+     * Pure testable schedule builder combining daily ranges, booked visits, visit durations,
+     * and automatic travel/delay buffers.
+     */
+    fun generateScheduleForDaysWithConfig(
+        daysAhead: Int = 7,
+        bookedVisits: List<PsaHomeVisit> = emptyList(),
+        dailySlots: List<Pair<String, String>> = DEFAULT_HOURLY_RANGES,
+        blockedIds: Set<String> = emptySet(),
+        intervalConfig: ScheduleIntervalConfig = ScheduleIntervalConfig(),
+        useIntervalBufferWindows: Boolean = false,
+        visitDurationsById: Map<String, Int> = emptyMap(),
+        startCalendar: Calendar = Calendar.getInstance()
+    ): List<PsaTimeSlot> {
+        val calendar = (startCalendar.clone() as Calendar)
         val slots = mutableListOf<PsaTimeSlot>()
 
         val activeVisits = bookedVisits.filter { it.status != PsaVisitStatus.CANCELADA }
@@ -114,11 +312,15 @@ object PsaScheduleManager {
             val dayVisits = visitsByDate[dateKey].orEmpty()
             val visitsByTime = dayVisits.associateBy { it.scheduledTime }
 
-            // Combine configured daily slots with any custom free-time visits for this day
             val allRangesForDay = dailySlots.toMutableList()
             dayVisits.forEach { visit ->
-                if (allRangesForDay.none { it.first == visit.scheduledTime }) {
-                    allRangesForDay.add(visit.scheduledTime to calculateEndTime(visit.scheduledTime))
+                val visitDuration = visitDurationsById[visit.id] ?: intervalConfig.demoDurationMinutes
+                val visitEnd = calculateEndTime(visit.scheduledTime, visitDuration)
+                val existingIndex = allRangesForDay.indexOfFirst { it.first == visit.scheduledTime }
+                if (existingIndex < 0) {
+                    allRangesForDay.add(visit.scheduledTime to visitEnd)
+                } else if (useIntervalBufferWindows || visitDurationsById.containsKey(visit.id)) {
+                    allRangesForDay[existingIndex] = visit.scheduledTime to visitEnd
                 }
             }
             allRangesForDay.sortBy { it.first }
@@ -151,21 +353,94 @@ object PsaScheduleManager {
                 )
             }
 
-            // AUTO-BUFFER LOGIC: If a slot is BOOKED, the immediately succeeding slot in the same day
-            // automatically becomes BUFFER (safety margin for delay/travel) unless it's already BOOKED.
-            for (i in 0 until daySlots.size - 1) {
-                if (daySlots[i].status == PsaSlotStatus.BOOKED) {
-                    val nextSlot = daySlots[i + 1]
-                    if (nextSlot.status != PsaSlotStatus.BOOKED) {
-                        daySlots[i + 1] = nextSlot.copy(
-                            status = PsaSlotStatus.BUFFER,
-                            assignedCustomerName = "Margen de seguridad (traslado/demora)"
+            if (useIntervalBufferWindows) {
+                val bufferMins = intervalConfig.travelBufferMinutes
+                val occupiedWindows = dayVisits.mapNotNull { visit ->
+                    val s = parseTimeMinutes(visit.scheduledTime) ?: return@mapNotNull null
+                    val dur = visitDurationsById[visit.id] ?: intervalConfig.demoDurationMinutes
+                    s to (s + dur)
+                }
+                val resolvedSlots = mutableListOf<PsaTimeSlot>()
+                for (slot in daySlots) {
+                    if (slot.status == PsaSlotStatus.BOOKED) {
+                        resolvedSlots.add(slot)
+                        continue
+                    }
+                    val slotStart = parseTimeMinutes(slot.startTime)
+                    val slotEnd = parseTimeMinutes(slot.endTime)
+                    if (slotStart == null || slotEnd == null) {
+                        resolvedSlots.add(slot)
+                        continue
+                    }
+                    val overlapsVisit = occupiedWindows.any { (vStart, vEnd) ->
+                        slotStart < vEnd && slotEnd > vStart
+                    }
+                    if (overlapsVisit) {
+                        continue
+                    }
+                    val inBufferWindow = bufferMins > 0 && occupiedWindows.any { (_, vEnd) ->
+                        val bufEnd = vEnd + bufferMins
+                        slotStart < bufEnd && slotEnd > vEnd
+                    }
+                    if (inBufferWindow) {
+                        resolvedSlots.add(
+                            slot.copy(
+                                status = PsaSlotStatus.BUFFER,
+                                assignedCustomerName = "Margen de traslado / demora (~${bufferMins} min)"
+                            )
                         )
+                    } else {
+                        resolvedSlots.add(slot)
                     }
                 }
+                if (bufferMins > 0) {
+                    val syntheticBuffers = mutableListOf<PsaTimeSlot>()
+                    for (booked in resolvedSlots.filter { it.status == PsaSlotStatus.BOOKED }) {
+                        val bEnd = parseTimeMinutes(booked.endTime) ?: continue
+                        val bufEnd = (bEnd + bufferMins).coerceAtMost(23 * 60 + 59)
+                        if (bufEnd <= bEnd) continue
+                        val hasExistingBufferOrBookingAfter = resolvedSlots.any { candidate ->
+                            val cStart = parseTimeMinutes(candidate.startTime) ?: return@any false
+                            val cEnd = parseTimeMinutes(candidate.endTime) ?: return@any false
+                            (candidate.status == PsaSlotStatus.BUFFER || candidate.status == PsaSlotStatus.BOOKED) &&
+                                cStart < bufEnd && cEnd > bEnd
+                        }
+                        if (!hasExistingBufferOrBookingAfter) {
+                            val bStartStr = formatMinutesAsTime(bEnd)
+                            val bEndStr = formatMinutesAsTime(bufEnd)
+                            syntheticBuffers.add(
+                                PsaTimeSlot(
+                                    id = "buffer_${dateKey}_${bStartStr.replace(":", "")}",
+                                    dateKey = dateKey,
+                                    displayDate = displayDate,
+                                    startTime = bStartStr,
+                                    endTime = bEndStr,
+                                    status = PsaSlotStatus.BUFFER,
+                                    assignedCustomerName = "Margen de seguridad (~${bufferMins} min traslado/demora)"
+                                )
+                            )
+                        }
+                    }
+                    resolvedSlots.addAll(syntheticBuffers)
+                }
+                resolvedSlots.sortBy { it.startTime }
+                slots.addAll(resolvedSlots)
+            } else {
+                // Standard succeeding-slot BUFFER logic
+                for (i in 0 until daySlots.size - 1) {
+                    if (daySlots[i].status == PsaSlotStatus.BOOKED) {
+                        val nextSlot = daySlots[i + 1]
+                        if (nextSlot.status != PsaSlotStatus.BOOKED) {
+                            daySlots[i + 1] = nextSlot.copy(
+                                status = PsaSlotStatus.BUFFER,
+                                assignedCustomerName = "Margen de seguridad (traslado/demora)"
+                            )
+                        }
+                    }
+                }
+                slots.addAll(daySlots)
             }
 
-            slots.addAll(daySlots)
             calendar.add(Calendar.DAY_OF_YEAR, 1)
         }
 

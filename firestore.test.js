@@ -759,3 +759,194 @@ test("Superuser manages access_tokens; authenticated user can redeem valid AVAIL
   await assertSucceeds(adminDb.collection("access_tokens").doc(openTokenCode).delete());
 });
 
+test("Hierarchy rules: authorized manager submits PENDING requests, superuser activates & cascades tree, supervisorChain scopes list", async () => {
+  const managerEmail = "lider1@gmail.com";
+  const subEmail = "subvendedor@gmail.com";
+  const peerEmail = "otro_vendedor@gmail.com";
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("authorized_users").doc(managerEmail).set(
+      buildUserDoc({
+        id: "mgr_1",
+        email: managerEmail,
+        username: "Lider Uno",
+        ownerUid: "uid-mgr-1",
+        boundDeviceIds: ["dev-mgr"],
+        boundDeviceLabels: ["Pixel 8"],
+        canManageSubUsers: true,
+        visibilityDepth: 0,
+        approvalStatus: "ACTIVE",
+        parentEmail: "",
+        supervisorChainEmails: [],
+        hierarchyDepth: 0,
+      })
+    );
+    await db.collection("authorized_users").doc(peerEmail).set(
+      buildUserDoc({
+        id: "peer_1",
+        email: peerEmail,
+        username: "Peer Normal",
+        ownerUid: "uid-peer-1",
+        boundDeviceIds: ["dev-peer"],
+        boundDeviceLabels: ["Moto"],
+        canManageSubUsers: false,
+        visibilityDepth: 1,
+        approvalStatus: "ACTIVE",
+        parentEmail: "",
+        supervisorChainEmails: [],
+        hierarchyDepth: 0,
+      })
+    );
+  });
+
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", { email: ADMIN_EMAIL, email_verified: true })
+    .firestore();
+  const managerDb = testEnv
+    .authenticatedContext("uid-mgr-1", { email: managerEmail, email_verified: true })
+    .firestore();
+  const peerDb = testEnv
+    .authenticatedContext("uid-peer-1", { email: peerEmail, email_verified: true })
+    .firestore();
+  const subDb = testEnv
+    .authenticatedContext("uid-sub-1", { email: subEmail, email_verified: true })
+    .firestore();
+
+  const reqDoc = {
+    id: "req_sub_1",
+    requestType: "NEW_SUB_USER",
+    requestedParentEmail: managerEmail,
+    requestedParentName: "Lider Uno",
+    targetEmail: subEmail,
+    targetUsername: "Sub Vendedor",
+    suggestedDays: 30,
+    maxDevices: 1,
+    notes: "Equipo Norte",
+    requestedByUid: "uid-mgr-1",
+    requestedByEmail: managerEmail,
+    status: "PENDING",
+    resolvedByEmail: "",
+    createdAt: pastDate(500),
+    updatedAt: pastDate(500),
+  };
+
+  // Peer WITHOUT canManageSubUsers cannot submit hierarchy requests
+  await assertFails(
+    peerDb.collection("hierarchy_requests").doc("req_peer").set({
+      ...reqDoc,
+      id: "req_peer",
+      requestedParentEmail: peerEmail,
+      requestedByUid: "uid-peer-1",
+      requestedByEmail: peerEmail,
+    })
+  );
+
+  // Manager CANNOT submit a request already marked APPROVED
+  await assertFails(
+    managerDb.collection("hierarchy_requests").doc("req_spoof").set({
+      ...reqDoc,
+      id: "req_spoof",
+      status: "APPROVED",
+    })
+  );
+
+  // Authorized manager submits valid PENDING sub-user request
+  await assertSucceeds(managerDb.collection("hierarchy_requests").doc("req_sub_1").set(reqDoc));
+
+  // Manager can list only their own requests; peer cannot read manager's request
+  await assertSucceeds(
+    managerDb.collection("hierarchy_requests").where("requestedByEmail", "==", managerEmail).get()
+  );
+  await assertFails(peerDb.collection("hierarchy_requests").doc("req_sub_1").get());
+
+  // Manager CANNOT self-approve
+  await assertFails(
+    managerDb.collection("hierarchy_requests").doc("req_sub_1").update({
+      status: "APPROVED",
+      resolvedByEmail: managerEmail,
+      updatedAt: pastDate(200),
+    })
+  );
+
+  // Pending sub-user created by Superuser with PENDING_APPROVAL cannot claim device slot until Superuser sets ACTIVE
+  await assertSucceeds(
+    adminDb.collection("authorized_users").doc(subEmail).set(
+      buildUserDoc({
+        id: "sub_1",
+        email: subEmail,
+        username: "Sub Vendedor",
+        approvalStatus: "PENDING_APPROVAL",
+        isBlocked: true,
+        parentEmail: managerEmail,
+        supervisorChainEmails: [managerEmail],
+        hierarchyDepth: 1,
+        requestedByEmail: managerEmail,
+      })
+    )
+  );
+  await assertFails(
+    subDb.collection("authorized_users").doc(subEmail).update({
+      ownerUid: "uid-sub-1",
+      boundDeviceIds: ["dev-sub"],
+      boundDeviceLabels: ["Galaxy A34"],
+      updatedAt: pastDate(100),
+    })
+  );
+
+  // Superuser approves request & enables sub-user
+  await assertSucceeds(
+    adminDb.collection("authorized_users").doc(subEmail).update({
+      approvalStatus: "ACTIVE",
+      isBlocked: false,
+      updatedAt: pastDate(100),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("hierarchy_requests").doc("req_sub_1").update({
+      status: "APPROVED",
+      resolvedByEmail: ADMIN_EMAIL,
+      updatedAt: pastDate(100),
+    })
+  );
+
+  // Sub-user writes own extended messaging/call SellerPerformanceStats with supervisorChainEmails
+  const subStatsDoc = {
+    ownerUid: "uid-sub-1",
+    sellerName: "Sub Vendedor",
+    sellerEmail: subEmail,
+    totalContacts: 22,
+    totalVisits: 9,
+    completedDemos: 6,
+    closedSales: 4,
+    pendingReplacements: 1,
+    messagesSuccess: 45,
+    messagesFailed: 5,
+    messagesTotal: 50,
+    callsAttempted: 18,
+    callsConnected: 12,
+    lastMessageAtMs: Date.now() - 2000,
+    lastActivityAtMs: Date.now() - 1000,
+    lastActivityLabel: "Envío exitoso PSA Senior 4",
+    recentActivityJson: "[{\"d\":\"2026-11-23\",\"l\":\"23/11\",\"ok\":12,\"fail\":1,\"call\":4}]",
+    parentEmail: managerEmail,
+    supervisorChainEmails: [managerEmail],
+    hierarchyDepth: 1,
+    updatedAt: pastDate(50),
+  };
+  await assertSucceeds(subDb.collection("seller_stats").doc("uid-sub-1").set(subStatsDoc));
+
+  // Manager can query subordinates & seller_stats via array-contains on supervisorChainEmails; peer CANNOT
+  await assertSucceeds(
+    managerDb.collection("authorized_users").where("supervisorChainEmails", "array-contains", managerEmail).get()
+  );
+  await assertSucceeds(
+    managerDb.collection("seller_stats").where("supervisorChainEmails", "array-contains", managerEmail).get()
+  );
+  await assertFails(
+    peerDb.collection("seller_stats").where("supervisorChainEmails", "array-contains", managerEmail).get()
+  );
+  await assertFails(peerDb.collection("seller_stats").doc("uid-sub-1").get());
+});
+
+

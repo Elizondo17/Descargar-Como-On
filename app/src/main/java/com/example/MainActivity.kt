@@ -4,6 +4,7 @@ import android.Manifest
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -56,9 +57,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.ui.draw.scale
@@ -103,6 +101,7 @@ import com.example.data.model.ScriptItem
 import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.AutomationScreen
 import com.example.ui.screens.DashboardScreen
+import com.example.ui.screens.HierarchyManagementScreen
 import com.example.ui.screens.ScriptsScreen
 import com.example.ui.screens.SuperuserScreen
 import com.example.ui.screens.RestrictedAccessScreen
@@ -187,6 +186,7 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
     val availableAppUpdate by viewModel.availableAppUpdate.collectAsState()
     val appUpdateCheckFeedback by viewModel.appUpdateCheckFeedback.collectAsState()
     val isAppDistributionSignedIn by viewModel.isAppDistributionTesterSignedIn.collectAsState()
+    val visibleHierarchyUsers by viewModel.visibleHierarchyUsers.collectAsState()
     val isLargeFont = com.example.ui.theme.LocalIsLargeFontMode.current
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -195,13 +195,25 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
     var showExpiringRenewDialog by remember { mutableStateOf(false) }
 
     var currentTab by remember { mutableStateOf(AppTab.PSA_WORKSPACE) }
+    var pendingPsaConfigAction by remember { mutableStateOf<com.example.ui.screens.psa.PsaConfigAction?>(null) }
+    var showHierarchyScreen by remember { mutableStateOf(false) }
+    var hierarchyInspectEmail by remember { mutableStateOf<String?>(null) }
     var scriptForAutomation by remember { mutableStateOf<ScriptItem?>(null) }
 
     val activeUserKey = currentUser?.let { it.email.ifBlank { it.id } } ?: ""
     LaunchedEffect(activeUserKey) {
         val logged = currentUser
+        showHierarchyScreen = false
+        hierarchyInspectEmail = null
         if (logged != null) {
-            currentTab = if (logged.role == "SUPERUSER") AppTab.DASHBOARD else AppTab.PSA_WORKSPACE
+            currentTab = AppTab.PSA_WORKSPACE
+        }
+    }
+
+    LaunchedEffect(currentTab) {
+        if (currentTab != AppTab.DASHBOARD) {
+            showHierarchyScreen = false
+            hierarchyInspectEmail = null
         }
     }
 
@@ -384,8 +396,7 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
         AuthScreen(
             viewModel = viewModel,
             onLoginSuccess = {
-                val loggedUser = viewModel.currentUser.value
-                currentTab = if (loggedUser?.role == "SUPERUSER") AppTab.DASHBOARD else AppTab.PSA_WORKSPACE
+                currentTab = AppTab.PSA_WORKSPACE
             }
         )
         return
@@ -393,6 +404,7 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
 
     val effectiveLockReason = when {
         licenseEvaluation.isLocked -> licenseEvaluation.reason
+        user.isPendingApproval && user.role != "SUPERUSER" -> AccessLockReason.PENDING_SUPERUSER_APPROVAL
         user.isBlocked -> AccessLockReason.ADMIN_BLOCKED
         user.isExpired -> AccessLockReason.DAYS_EXPIRED
         else -> AccessLockReason.NONE
@@ -431,8 +443,9 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
     val roleMatrix by viewModel.roleVisibilityConfig.collectAsState()
     val isSuperuser = user.role == "SUPERUSER"
     val canAccessLegacy = isSuperuser || isGlobalLegacyEnabled || user.canAccessLegacyModules
+    val canManageHierarchy = isSuperuser || user.canManageSubUsers || visibleHierarchyUsers.isNotEmpty()
 
-    val showDashboard = roleMatrix.isTabVisible("DASHBOARD", isSuperuser) && canAccessLegacy
+    val showDashboard = (roleMatrix.isTabVisible("DASHBOARD", isSuperuser) && canAccessLegacy) || canManageHierarchy
     val showScripts = roleMatrix.isTabVisible("SCRIPTS", isSuperuser) && canAccessLegacy
     val showAutomation = roleMatrix.isTabVisible("AUTOMATION", isSuperuser) && canAccessLegacy
     val showPsa = roleMatrix.isTabVisible("PSA_WORKSPACE", isSuperuser)
@@ -456,6 +469,10 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                 else -> AppTab.PSA_WORKSPACE
             }
         }
+    }
+
+    BackHandler(enabled = currentTab != AppTab.PSA_WORKSPACE && !showHierarchyScreen) {
+        currentTab = AppTab.PSA_WORKSPACE
     }
 
     Scaffold(
@@ -570,106 +587,6 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                     containerColor = SlateCard
                 )
             )
-        },
-        bottomBar = {
-            val visibleCount = listOf(showDashboard, showScripts, showAutomation, showPsa, showSuperuser).count { it }
-            if (visibleCount > 1) {
-                NavigationBar(
-                    containerColor = SlateCard,
-                    contentColor = TextSecondary,
-                    tonalElevation = 8.dp
-                ) {
-                    val navFontSize = when (fontScaleLevel) {
-                        com.example.ui.theme.FontScaleLevel.ULTRA_GRANDE -> 8.5.sp
-                        com.example.ui.theme.FontScaleLevel.CHICATO -> 9.5.sp
-                        else -> 11.sp
-                    }
-                    if (showDashboard) {
-                        NavigationBarItem(
-                            selected = currentTab == AppTab.DASHBOARD,
-                            onClick = { currentTab = AppTab.DASHBOARD },
-                            icon = { Icon(Icons.Default.Assessment, contentDescription = "Panel") },
-                            label = { Text("Panel", fontSize = navFontSize, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = IndigoPrimary,
-                                selectedTextColor = IndigoPrimary,
-                                indicatorColor = IndigoPrimary.copy(alpha = 0.15f),
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_dashboard")
-                        )
-                    }
-
-                    if (showScripts) {
-                        NavigationBarItem(
-                            selected = currentTab == AppTab.SCRIPTS,
-                            onClick = { currentTab = AppTab.SCRIPTS },
-                            icon = { Icon(Icons.Default.Description, contentDescription = "Scripts") },
-                            label = { Text("Scripts", fontSize = navFontSize, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = IndigoPrimary,
-                                selectedTextColor = IndigoPrimary,
-                                indicatorColor = IndigoPrimary.copy(alpha = 0.15f),
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_scripts")
-                        )
-                    }
-
-                    if (showAutomation) {
-                        NavigationBarItem(
-                            selected = currentTab == AppTab.AUTOMATION,
-                            onClick = { currentTab = AppTab.AUTOMATION },
-                            icon = { Icon(Icons.Default.Bolt, contentDescription = "Envíos") },
-                            label = { Text("Envíos", fontSize = navFontSize, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = IndigoPrimary,
-                                selectedTextColor = IndigoPrimary,
-                                indicatorColor = IndigoPrimary.copy(alpha = 0.15f),
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_automation")
-                        )
-                    }
-
-                    if (showPsa) {
-                        NavigationBarItem(
-                            selected = currentTab == AppTab.PSA_WORKSPACE,
-                            onClick = { currentTab = AppTab.PSA_WORKSPACE },
-                            icon = { Icon(Icons.Default.WaterDrop, contentDescription = "PSA Agua") },
-                            label = { Text("PSA", fontSize = navFontSize, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = com.example.ui.theme.PsaCyanGlow,
-                                selectedTextColor = com.example.ui.theme.PsaCyanGlow,
-                                indicatorColor = com.example.ui.theme.PsaCyanPrimary.copy(alpha = 0.2f),
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_psa_workspace")
-                        )
-                    }
-
-                    if (showSuperuser) {
-                        NavigationBarItem(
-                            selected = currentTab == AppTab.SUPERUSER,
-                            onClick = { currentTab = AppTab.SUPERUSER },
-                            icon = { Icon(Icons.Default.AdminPanelSettings, contentDescription = "Superusuario") },
-                            label = { Text("Admin", fontSize = navFontSize, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = IndigoPrimary,
-                                selectedTextColor = IndigoPrimary,
-                                indicatorColor = IndigoPrimary.copy(alpha = 0.15f),
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_superuser")
-                        )
-                    }
-                }
-            }
         }
     )
  { innerPadding ->
@@ -896,10 +813,28 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                     label = "tab_switch"
                 ) { tab ->
                     when (tab) {
-                        AppTab.DASHBOARD -> DashboardScreen(
-                            viewModel = viewModel,
-                            onNavigateToAutomation = { currentTab = AppTab.AUTOMATION }
-                        )
+                        AppTab.DASHBOARD -> {
+                            if (showHierarchyScreen && canManageHierarchy) {
+                                HierarchyManagementScreen(
+                                    viewModel = viewModel,
+                                    initialInspectSellerEmail = hierarchyInspectEmail,
+                                    onNavigateBack = {
+                                        showHierarchyScreen = false
+                                        hierarchyInspectEmail = null
+                                    }
+                                )
+                            } else {
+                                DashboardScreen(
+                                    viewModel = viewModel,
+                                    onNavigateToAutomation = { currentTab = AppTab.AUTOMATION },
+                                    canAccessAutomation = showAutomation,
+                                    onNavigateToHierarchy = { inspectEmail ->
+                                        hierarchyInspectEmail = inspectEmail
+                                        showHierarchyScreen = true
+                                    }
+                                )
+                            }
+                        }
                         AppTab.SCRIPTS -> ScriptsScreen(
                             viewModel = viewModel,
                             onSelectScriptForAutomation = { script ->
@@ -913,8 +848,19 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                         )
                         AppTab.PSA_WORKSPACE -> com.example.ui.screens.psa.PsaWorkspaceScreen(
                             viewModel = viewModel,
+                            pendingConfigAction = pendingPsaConfigAction,
+                            onConsumeConfigAction = { pendingPsaConfigAction = null },
+                            showDashboardNav = showDashboard,
+                            showSuperuserNav = showSuperuser,
+                            showScriptsNav = showScripts,
+                            showAutomationNav = showAutomation,
+                            onNavigateAppTab = { targetTab ->
+                                showHierarchyScreen = false
+                                hierarchyInspectEmail = null
+                                currentTab = targetTab
+                            },
                             onOpenHelpGuide = { showSettingsAndHelpDialog = true },
-                            onClose = { currentTab = AppTab.DASHBOARD }
+                            onClose = { }
                         )
                         AppTab.SUPERUSER -> SuperuserScreen(
                             viewModel = viewModel
@@ -1042,6 +988,14 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
             },
             onCheckAppDistributionUpdates = {
                 viewModel.triggerFirebaseAppDistributionCheck()
+            },
+            onOpenPsaPricing = {
+                currentTab = AppTab.PSA_WORKSPACE
+                pendingPsaConfigAction = com.example.ui.screens.psa.PsaConfigAction.PRICING
+            },
+            onOpenPsaDipPortal = {
+                currentTab = AppTab.PSA_WORKSPACE
+                pendingPsaConfigAction = com.example.ui.screens.psa.PsaConfigAction.DIP_PORTAL
             },
             onDismiss = { showSettingsAndHelpDialog = false }
         )
@@ -1261,6 +1215,8 @@ fun ContactSuperuserDialog(
             "Hola Administrador, mi usuario (${user.username} • $identityLabel) presenta una verificación de fecha/hora en Como On. ¿Podrías ayudarme a revisarlo?"
         AccessLockReason.UPDATE_REQUIRED ->
             "Hola Administrador, ya actualicé / estoy intentando actualizar Como On (usuario: ${user.username} • $identityLabel). ¿Podrías verificar o rehabilitar mi acceso?"
+        AccessLockReason.PENDING_SUPERUSER_APPROVAL ->
+            "Hola Administrador, mi sub-cuenta (${user.username} • $identityLabel) está pendiente de habilitación en Como On. ¿Podrías activarme el acceso?"
         AccessLockReason.ADMIN_BLOCKED, AccessLockReason.NONE ->
             "Hola Administrador, mi usuario (${user.username} • $identityLabel) se encuentra restringido en Como On. ¿Podrías revisar mi acceso?"
     }

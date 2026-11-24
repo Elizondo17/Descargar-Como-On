@@ -927,15 +927,15 @@ class PsaDemoAndCloudTest {
     }
 
     @Test
-    fun `psaWorkspace keeps only agenda and live demo as primary foreground tabs`() {
+    fun `psaWorkspace keeps only live demo as primary foreground tab while agenda lives in drawer`() {
         val primary = com.example.ui.screens.psa.PsaWorkspaceTab.entries.filter { it.isPrimaryTab }
         assertEquals(
             listOf(
-                com.example.ui.screens.psa.PsaWorkspaceTab.AGENDA,
                 com.example.ui.screens.psa.PsaWorkspaceTab.LIVE_DEMO
             ),
             primary
         )
+        assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.AGENDA.isPrimaryTab)
         assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.BUDGET.isPrimaryTab)
         assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.STOCK.isPrimaryTab)
         assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.CONTACTS.isPrimaryTab)

@@ -80,6 +80,35 @@
           "type": "string",
           "description": "Optional Cloud Access Token code used to activate this license"
         },
+        "parentEmail": {
+          "type": "string",
+          "description": "Normalized email of the direct superior in the team hierarchy"
+        },
+        "supervisorChainEmails": {
+          "type": "array",
+          "description": "Ordered list of ancestor superior emails above this user (max 10)"
+        },
+        "hierarchyDepth": {
+          "type": "integer",
+          "description": "Depth level from pyramid root (0 = root, 1+ = subordinate level)"
+        },
+        "approvalStatus": {
+          "type": "string",
+          "enum": ["ACTIVE", "PENDING_APPROVAL", "REJECTED"],
+          "description": "Superuser activation approval state"
+        },
+        "canManageSubUsers": {
+          "type": "boolean",
+          "description": "Whether this user can propose/view sub-users below them (Superuser editable)"
+        },
+        "visibilityDepth": {
+          "type": "integer",
+          "description": "Maximum subordinate depth visible below this user (0 = full subtree, N = max levels)"
+        },
+        "requestedByEmail": {
+          "type": "string",
+          "description": "Superior email who originally proposed this sub-user"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -348,7 +377,7 @@
     },
     "SellerStats": {
       "title": "SellerStats",
-      "description": "Aggregated non-PII KPIs per seller for the admin performance dashboard.",
+      "description": "Aggregated non-PII KPIs per seller including messaging, calls, recent activity, and supervisor chain for dashboard & coaching.",
       "type": "object",
       "properties": {
         "ownerUid": { "type": "string" },
@@ -359,11 +388,50 @@
         "completedDemos": { "type": "integer" },
         "closedSales": { "type": "integer" },
         "pendingReplacements": { "type": "integer" },
+        "messagesSuccess": { "type": "integer" },
+        "messagesFailed": { "type": "integer" },
+        "messagesTotal": { "type": "integer" },
+        "callsAttempted": { "type": "integer" },
+        "callsConnected": { "type": "integer" },
+        "lastMessageAtMs": { "type": "integer" },
+        "lastActivityAtMs": { "type": "integer" },
+        "lastActivityLabel": { "type": "string" },
+        "recentActivityJson": { "type": "string" },
+        "parentEmail": { "type": "string" },
+        "supervisorChainEmails": { "type": "array" },
+        "hierarchyDepth": { "type": "integer" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
         "ownerUid", "sellerName", "sellerEmail", "totalContacts", "totalVisits",
         "completedDemos", "closedSales", "pendingReplacements", "updatedAt"
+      ]
+    },
+    "HierarchyRequest": {
+      "title": "HierarchyRequest",
+      "description": "Sub-user creation or existing-user re-parenting proposal submitted by an authorized manager and gated by Superuser approval.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "requestType": { "type": "string", "enum": ["NEW_SUB_USER", "LINK_EXISTING_USER"] },
+        "requestedParentEmail": { "type": "string" },
+        "requestedParentName": { "type": "string" },
+        "targetEmail": { "type": "string" },
+        "targetUsername": { "type": "string" },
+        "suggestedDays": { "type": "integer" },
+        "maxDevices": { "type": "integer" },
+        "notes": { "type": "string" },
+        "requestedByUid": { "type": "string" },
+        "requestedByEmail": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "resolvedByEmail": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "requestType", "requestedParentEmail", "requestedParentName", "targetEmail",
+        "targetUsername", "suggestedDays", "maxDevices", "notes", "requestedByUid",
+        "requestedByEmail", "status", "resolvedByEmail", "createdAt", "updatedAt"
       ]
     },
     "AppErrorReport": {
@@ -423,7 +491,11 @@
     },
     "/seller_stats/{ownerUid}": {
       "schema": { "$ref": "#/entities/SellerStats" },
-      "description": "Aggregated KPI totals per seller readable by bootstrap admin"
+      "description": "Aggregated messaging, calls, recent activity, and KPIs per seller readable by owner, bootstrap admin, and authorized ancestors"
+    },
+    "/hierarchy_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/HierarchyRequest" },
+      "description": "Sub-user creation and existing-user link requests submitted by managers for Superuser activation"
     },
     "/AppErrors/{errorId}": {
       "schema": { "$ref": "#/entities/AppErrorReport" },

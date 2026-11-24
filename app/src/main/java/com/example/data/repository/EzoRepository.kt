@@ -5,6 +5,7 @@ import com.example.data.local.AppDatabase
 import com.example.data.model.BusinessProfile
 import com.example.data.model.DeliveryLog
 import com.example.data.model.DeliveryStats
+import com.example.data.model.HierarchyTreeBuilder
 import com.example.data.model.ScannedChat
 import com.example.data.model.ScriptFolder
 import com.example.data.model.ScriptItem
@@ -807,7 +808,14 @@ class EzoRepository(
                         daysGranted = remote.daysGranted,
                         isBlocked = remote.isBlocked,
                         canAccessLegacyModules = remote.canAccessLegacyModules,
-                        notes = remote.notes
+                        notes = remote.notes,
+                        parentEmail = remote.parentEmail.ifBlank { existing.parentEmail },
+                        supervisorChainSerialized = remote.supervisorChainSerialized.ifBlank { existing.supervisorChainSerialized },
+                        hierarchyDepth = if (remote.hierarchyDepth > 0 || remote.parentEmail.isNotBlank()) remote.hierarchyDepth else existing.hierarchyDepth,
+                        approvalStatus = remote.approvalStatus.ifBlank { existing.approvalStatus },
+                        canManageSubUsers = remote.canManageSubUsers || existing.canManageSubUsers,
+                        visibilityDepth = if (remote.visibilityDepth > 0) remote.visibilityDepth else existing.visibilityDepth,
+                        requestedByEmail = remote.requestedByEmail.ifBlank { existing.requestedByEmail }
                     )
                     userDao.updateUser(merged)
                     userTokenDao.setTokenBlockedByUserId(merged.id, merged.isBlocked)
@@ -1032,10 +1040,20 @@ class EzoRepository(
                 timestamp = System.currentTimeMillis()
             )
         )
+        if (cloudTeamRepository?.getCurrentFirebaseUser() != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                publishCurrentSellerStats()
+            }
+        }
     }
 
     suspend fun clearAllDeliveryLogs() {
         deliveryLogDao.clearLogs()
+        if (cloudTeamRepository?.getCurrentFirebaseUser() != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                publishCurrentSellerStats()
+            }
+        }
     }
 
     // Business Profile & AI Configuration
@@ -1367,8 +1385,10 @@ class EzoRepository(
         val uid = fbUser.uid
         val curUser = _currentUser.value
         val leads = psaContactDao.getAllLeads().first()
+        val interactions = psaContactDao.getAllInteractions().first()
         val visits = psaVisitDao.getAllVisits().first()
         val postSale = psaPostSaleDao.getAllInstallations().first()
+        val deliveryLogs = deliveryLogDao.getAllLogs().first()
         val nowMs = System.currentTimeMillis()
         val dueThresholdMs = nowMs + (15L * 86_400_000L)
         val pendingReplacementsCount = postSale.count {
@@ -1376,6 +1396,82 @@ class EzoRepository(
         }
         val completedDemosCount = visits.count { it.diagnosticTimestampMs > 0L || it.chlorinePpm > 0f || it.hardnessPpm > 0 }
         val closedSalesCount = visits.count { it.status == PsaVisitStatus.CERRADA_EXITO } + postSale.size
+
+        val deliverySuccess = deliveryLogs.count { it.status == "SUCCESS" }
+        val deliveryFailed = deliveryLogs.count { it.status == "FAILED" }
+        val psaMessageInteractions = interactions.filter { it.channel == "MESSAGE" }
+        val psaMessageSuccess = psaMessageInteractions.count { it.result == "SUCCESS" || it.result == "RESCHEDULED" }
+        val psaMessageFailed = psaMessageInteractions.count { it.result == "REJECTED" || it.result == "NO_ANSWER" }
+
+        val messagesSuccess = deliverySuccess + psaMessageSuccess
+        val messagesFailed = deliveryFailed + psaMessageFailed
+        val messagesTotal = (messagesSuccess + messagesFailed)
+            .coerceAtLeast(deliveryLogs.size + psaMessageInteractions.size)
+
+        val callInteractions = interactions.filter { it.channel == "CALL" }
+        val callsAttempted = maxOf(
+            leads.sumOf { it.callAttemptsCount },
+            callInteractions.size
+        )
+        val callsConnected = callInteractions.count {
+            it.result == "SUCCESS" || it.result == "RESCHEDULED" || it.result == "REJECTED"
+        }
+
+        val latestDeliveryLog = deliveryLogs.maxByOrNull { it.timestamp }
+        val latestMsgInteraction = psaMessageInteractions.maxByOrNull { it.timestampMs }
+        val latestCallInteraction = callInteractions.maxByOrNull { it.timestampMs }
+        val latestVisit = visits.maxByOrNull { it.updatedAtMs }
+
+        val lastMessageAtMs = maxOf(
+            latestDeliveryLog?.timestamp ?: 0L,
+            latestMsgInteraction?.timestampMs ?: 0L
+        )
+        val lastActivityAtMs = listOf(
+            lastMessageAtMs,
+            latestCallInteraction?.timestampMs ?: 0L,
+            latestVisit?.updatedAtMs ?: 0L,
+            nowMs
+        ).maxOrNull() ?: nowMs
+
+        val lastActivityLabel = when {
+            lastMessageAtMs >= (latestCallInteraction?.timestampMs ?: 0L) &&
+                lastMessageAtMs >= (latestVisit?.updatedAtMs ?: 0L) &&
+                lastMessageAtMs > 0L -> {
+                if ((latestDeliveryLog?.timestamp ?: 0L) >= (latestMsgInteraction?.timestampMs ?: 0L)) {
+                    val statusTag = if (latestDeliveryLog?.status == "SUCCESS") "Envío exitoso" else "Envío con fallo"
+                    "$statusTag • ${latestDeliveryLog?.recipientPreview?.ifBlank { latestDeliveryLog.recipientId }.orEmpty()}"
+                        .trim(' ', '•')
+                        .take(140)
+                } else {
+                    "Mensaje PSA • ${latestMsgInteraction?.leadName.orEmpty()} (${latestMsgInteraction?.result.orEmpty()})"
+                        .take(140)
+                }
+            }
+            (latestCallInteraction?.timestampMs ?: 0L) >= (latestVisit?.updatedAtMs ?: 0L) &&
+                latestCallInteraction != null -> {
+                val resLabel = when (latestCallInteraction.result) {
+                    "SUCCESS" -> "Conectada"
+                    "RESCHEDULED" -> "Reprogramada"
+                    "NO_ANSWER" -> "Sin respuesta"
+                    else -> latestCallInteraction.result
+                }
+                "Llamada ($resLabel) • ${latestCallInteraction.leadName}".take(140)
+            }
+            latestVisit != null -> {
+                "Visita PSA • ${latestVisit.customerName}".take(140)
+            }
+            else -> "Sin actividad reciente registrada"
+        }
+
+        val messageEvents = deliveryLogs.map { it.timestamp to (it.status == "SUCCESS") } +
+            psaMessageInteractions.map { it.timestampMs to (it.result == "SUCCESS" || it.result == "RESCHEDULED") }
+        val callEvents = callInteractions.map { it.timestampMs }
+        val buckets = HierarchyTreeBuilder.buildLast7DaysBuckets(
+            deliveryTimestampsAndSuccess = messageEvents,
+            callTimestamps = callEvents,
+            nowMs = nowMs
+        )
+        val recentActivityJson = HierarchyTreeBuilder.serializeActivityBuckets(buckets)
 
         val stats = SellerPerformanceStats(
             ownerUid = uid,
@@ -1385,7 +1481,19 @@ class EzoRepository(
             totalVisits = visits.size,
             completedDemos = completedDemosCount,
             closedSales = closedSalesCount,
-            pendingReplacements = pendingReplacementsCount
+            pendingReplacements = pendingReplacementsCount,
+            messagesSuccess = messagesSuccess,
+            messagesFailed = messagesFailed,
+            messagesTotal = messagesTotal,
+            callsAttempted = callsAttempted,
+            callsConnected = callsConnected,
+            lastMessageAtMs = lastMessageAtMs,
+            lastActivityAtMs = lastActivityAtMs,
+            lastActivityLabel = lastActivityLabel,
+            recentActivityJson = recentActivityJson,
+            parentEmail = curUser?.parentEmail.orEmpty(),
+            supervisorChainEmails = curUser?.supervisorChainEmails.orEmpty(),
+            hierarchyDepth = curUser?.hierarchyDepth ?: 0
         )
         cloudRepo.upsertSellerStats(stats)
     }

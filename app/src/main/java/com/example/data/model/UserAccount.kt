@@ -29,13 +29,26 @@ data class UserAccount(
     val lastTamperAlertAtMs: Long = 0L,
     val updateRequired: Boolean = false,
     val requiredVersionCode: Int = 0,
-    val updateLockReason: String = ""
+    val updateLockReason: String = "",
+    val parentEmail: String = "",
+    val supervisorChainSerialized: String = "",
+    val hierarchyDepth: Int = 0,
+    val approvalStatus: String = "ACTIVE", // "ACTIVE", "PENDING_APPROVAL", "REJECTED"
+    val canManageSubUsers: Boolean = false,
+    val visibilityDepth: Int = 0, // 0 = full subtree below user, N = max N levels down
+    val requestedByEmail: String = ""
 ) {
     val createdAtMs: Long
         get() = createdAt
 
     val normalizedEmail: String
         get() = email.trim().lowercase()
+
+    val supervisorChainEmails: List<String>
+        get() = HierarchyTreeBuilder.parseChain(supervisorChainSerialized)
+
+    val isPendingApproval: Boolean
+        get() = approvalStatus == ApprovalStatus.PENDING_APPROVAL.name
 
     val boundDeviceIds: List<String>
         get() = boundDeviceIdsSerialized
@@ -61,7 +74,7 @@ data class UserAccount(
         get() = System.currentTimeMillis() > expiresAtMs
 
     val isActive: Boolean
-        get() = !isBlocked && !isExpired
+        get() = !isBlocked && !isExpired && approvalStatus == ApprovalStatus.ACTIVE.name
 
     val remainingDays: Long
         get() {

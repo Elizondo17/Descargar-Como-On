@@ -25,7 +25,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FormatSize
@@ -89,6 +91,8 @@ fun GeneralSettingsAndHelpDialog(
     onShowSetupGuideAgain: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onCheckAppDistributionUpdates: () -> Unit = {},
+    onOpenPsaPricing: () -> Unit = {},
+    onOpenPsaDipPortal: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var activeTabIndex by remember { mutableIntStateOf(0) }
@@ -279,6 +283,104 @@ fun GeneralSettingsAndHelpDialog(
                                     fontSize = 11.5.sp,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                                 )
+                            }
+                        }
+                    }
+
+                    // Comercial PSA: Precios y Portal DIP Oficial
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = SlateBackground),
+                        border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Comercial PSA",
+                                color = PsaCyanGlow,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.5.sp
+                            )
+
+                            if (isLargeFont) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            onDismiss()
+                                            onOpenPsaPricing()
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, PsaCyanGlow.copy(alpha = 0.5f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
+                                            .testTag("settings_btn_psa_pricing")
+                                    ) {
+                                        Icon(Icons.Default.AttachMoney, contentDescription = null, modifier = Modifier.size(16.dp), tint = PsaCyanGlow)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Precios y Cuotas PSA", fontSize = 12.sp, color = PsaCyanGlow, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            onDismiss()
+                                            onOpenPsaDipPortal()
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, EmeraldSuccess.copy(alpha = 0.5f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
+                                            .testTag("settings_btn_psa_dip_portal")
+                                    ) {
+                                        Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp), tint = EmeraldSuccess)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Portal DIP Oficial", fontSize = 12.sp, color = EmeraldSuccess, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            } else {
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            onDismiss()
+                                            onOpenPsaPricing()
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, PsaCyanGlow.copy(alpha = 0.5f)),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        modifier = Modifier
+                                            .heightIn(min = 48.dp)
+                                            .testTag("settings_btn_psa_pricing")
+                                    ) {
+                                        Icon(Icons.Default.AttachMoney, contentDescription = null, modifier = Modifier.size(16.dp), tint = PsaCyanGlow)
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text("Precios y Cuotas", fontSize = 12.sp, color = PsaCyanGlow, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            onDismiss()
+                                            onOpenPsaDipPortal()
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, EmeraldSuccess.copy(alpha = 0.5f)),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        modifier = Modifier
+                                            .heightIn(min = 48.dp)
+                                            .testTag("settings_btn_psa_dip_portal")
+                                    ) {
+                                        Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp), tint = EmeraldSuccess)
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text("Portal DIP Oficial", fontSize = 12.sp, color = EmeraldSuccess, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
                             }
                         }
                     }

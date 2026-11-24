@@ -41,10 +41,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,12 +59,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.service.EzoAccessibilityService
+import com.example.ui.components.DashboardAnalyticsChartsSection
 import com.example.ui.components.DeliveryLogItem
 import com.example.ui.components.FirstTimeSetupGuide
 import com.example.ui.components.StatCard
 import com.example.ui.theme.AmberDelay
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IndigoPrimary
+import com.example.ui.theme.PsaCyanGlow
+import com.example.ui.theme.PsaCyanPrimary
 import com.example.ui.theme.RoseError
 import com.example.ui.theme.SlateBackground
 import com.example.ui.theme.SlateCard
@@ -77,15 +82,23 @@ import com.example.ui.viewmodel.MainViewModel
 fun DashboardScreen(
     viewModel: MainViewModel,
     onNavigateToAutomation: () -> Unit,
+    onNavigateToHierarchy: (inspectEmail: String?) -> Unit = {},
+    canAccessAutomation: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val currentUser by viewModel.currentUser.collectAsState()
     val deliveryStats by viewModel.deliveryStats.collectAsState()
     val allLogs by viewModel.allLogs.collectAsState()
+    val visibleSubordinateStats by viewModel.visibleSubordinateStats.collectAsState()
+    val visibleHierarchyUsers by viewModel.visibleHierarchyUsers.collectAsState()
+    val local7DayBuckets by viewModel.local7DayBuckets.collectAsState()
+    val pendingRequestsCount by viewModel.pendingHierarchyRequestsCount.collectAsState()
     val context = LocalContext.current
     val isAccessibilityConnected by viewModel.isAccessibilityConnected.collectAsState()
     val hasSeenSetupGuide by viewModel.hasSeenSetupGuide.collectAsState()
     val isLargeFont = com.example.ui.theme.LocalIsLargeFontMode.current
+    val isSuperuser = currentUser?.role == "SUPERUSER"
+    val canViewHierarchy = isSuperuser || (currentUser?.canManageSubUsers == true) || visibleHierarchyUsers.isNotEmpty()
     val isSystemEnabled = remember(isAccessibilityConnected) {
         isAccessibilityConnected || EzoAccessibilityService.isAccessibilityEnabledInSettings(context)
     }
@@ -198,6 +211,109 @@ fun DashboardScreen(
                     viewModel = viewModel,
                     onDismissGuide = { viewModel.setSetupGuideDismissed(true) }
                 )
+            }
+        }
+
+        // Equipo y Pirámide Jerárquica (Superusuario o Líderes con sub-usuarios)
+        if (canViewHierarchy) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(SlateCard)
+                        .border(
+                            1.dp,
+                            if (pendingRequestsCount > 0) AmberDelay.copy(alpha = 0.65f) else PsaCyanPrimary.copy(alpha = 0.45f),
+                            RoundedCornerShape(16.dp)
+                        )
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(PsaCyanPrimary.copy(alpha = 0.16f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AccountTree,
+                                    contentDescription = "Estructura jerárquica",
+                                    tint = PsaCyanGlow,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = if (isSuperuser) "Estructura Piramidal y Aprobaciones" else "Mi Equipo y Coaching",
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.5.sp
+                                )
+                                Text(
+                                    text = if (isSuperuser) {
+                                        "Administra árbol de vendedores, permisos y altas pendientes."
+                                    } else {
+                                        "${visibleHierarchyUsers.size} sub-usuario(s) en tu rama para orientar."
+                                    },
+                                    color = TextSecondary,
+                                    fontSize = 11.5.sp
+                                )
+                            }
+                        }
+
+                        if (pendingRequestsCount > 0) {
+                            Surface(
+                                color = AmberDelay.copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, AmberDelay.copy(alpha = 0.6f))
+                            ) {
+                                Text(
+                                    text = "$pendingRequestsCount pend.",
+                                    color = AmberDelay,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = { onNavigateToHierarchy(null) },
+                        colors = ButtonDefaults.buttonColors(containerColor = PsaCyanPrimary),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("open_hierarchy_management_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AccountTree,
+                            contentDescription = null,
+                            tint = Color.Black,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isSuperuser) "Gestionar Pirámide y Sub-Usuarios" else "Ver Árbol y Coaching de Equipo",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.5.sp
+                        )
+                    }
+                }
             }
         }
 
@@ -492,29 +608,46 @@ fun DashboardScreen(
             }
         }
 
+        // Interactive Native Compose Analytics Charts (Messaging success/failure, calls & seller activity)
+        item {
+            DashboardAnalyticsChartsSection(
+                teamStats = visibleSubordinateStats,
+                localBuckets = local7DayBuckets,
+                deliveryStats = deliveryStats,
+                currentUserEmail = currentUser?.normalizedEmail.orEmpty(),
+                canViewSubordinates = canViewHierarchy,
+                onRefreshBoard = { viewModel.refreshSellerPerformanceBoard() },
+                onInspectSeller = if (canViewHierarchy) { sellerStats ->
+                    onNavigateToHierarchy(sellerStats.sellerEmail)
+                } else null
+            )
+        }
+
         // Autonomous AI Sales Memory Section
         item {
             AiSalesMemorySection(viewModel = viewModel)
         }
 
-        // Action CTA: Go to Automation
-        item {
-            Button(
-                onClick = onNavigateToAutomation,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 48.dp)
-                    .testTag("go_to_automation_button"),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary)
-            ) {
-                Icon(imageVector = Icons.Default.Bolt, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Iniciar Automatización",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
+        // Action CTA: Go to Automation (only when user has automation module enabled)
+        if (canAccessAutomation) {
+            item {
+                Button(
+                    onClick = onNavigateToAutomation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("go_to_automation_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary)
+                ) {
+                    Icon(imageVector = Icons.Default.Bolt, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Iniciar Automatización",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                }
             }
         }
 

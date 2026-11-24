@@ -30,8 +30,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -71,6 +73,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -83,10 +86,6 @@ import java.util.Calendar
 import java.util.Date
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
@@ -112,6 +111,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.AgendaTimeWindowFilter
+import com.example.data.model.AgendaVisitStatusFilter
 import com.example.data.model.PsaHomeVisit
 import com.example.data.model.PsaMessageTone
 import com.example.data.model.PsaPostSaleInstallation
@@ -121,6 +122,7 @@ import com.example.data.model.PsaSlotStatus
 import com.example.data.model.PsaTimeSlot
 import com.example.data.model.PsaVisitStatus
 import com.example.data.model.ReplacementUrgency
+import com.example.data.model.ScheduleIntervalConfig
 import com.example.util.DemoToBudgetHandoff
 import com.example.util.DemoWaterSource
 import com.example.ui.theme.AmberDelay
@@ -147,6 +149,13 @@ import com.example.util.PsaCountryRegistry
 import com.example.util.PsaScheduleManager
 import java.util.Locale
 
+import com.example.AppTab
+
+enum class PsaConfigAction {
+    PRICING,
+    DIP_PORTAL
+}
+
 enum class PsaWorkspaceTab(val label: String) {
     AGENDA("📅 Agenda"),
     CONTACTS("📞 Contactos"),
@@ -157,7 +166,7 @@ enum class PsaWorkspaceTab(val label: String) {
     AI_MEMORY("🧠 IA");
 
     val isPrimaryTab: Boolean
-        get() = this == AGENDA || this == LIVE_DEMO
+        get() = this == LIVE_DEMO
 }
 
 data class PsaChlorineStage(
@@ -176,6 +185,13 @@ data class PsaChlorineStage(
 @Composable
 fun PsaWorkspaceScreen(
     viewModel: MainViewModel,
+    pendingConfigAction: PsaConfigAction? = null,
+    onConsumeConfigAction: () -> Unit = {},
+    showDashboardNav: Boolean = false,
+    showSuperuserNav: Boolean = false,
+    showScriptsNav: Boolean = false,
+    showAutomationNav: Boolean = false,
+    onNavigateAppTab: (AppTab) -> Unit = {},
     onOpenHelpGuide: () -> Unit = {},
     onClose: () -> Unit = {}
 ) {
@@ -190,8 +206,8 @@ fun PsaWorkspaceScreen(
     val activeCountry by viewModel.activePsaCountry.collectAsState()
     val pendingOfficialPvp by viewModel.pendingOfficialPvpConfirmation.collectAsState()
 
-    var activeTab by remember { mutableStateOf(PsaWorkspaceTab.AGENDA) }
-    var lastPrimaryTab by remember { mutableStateOf(PsaWorkspaceTab.AGENDA) }
+    var activeTab by remember { mutableStateOf(PsaWorkspaceTab.LIVE_DEMO) }
+    var lastPrimaryTab by remember { mutableStateOf(PsaWorkspaceTab.LIVE_DEMO) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
 
@@ -220,6 +236,7 @@ fun PsaWorkspaceScreen(
     }
     var slotToBook by remember { mutableStateOf<PsaTimeSlot?>(null) }
     val dailySlots by viewModel.dailySlots.collectAsState()
+    val scheduleIntervalConfig by viewModel.scheduleIntervalConfig.collectAsState()
 
     // Refresh schedule on load or when visits change
     LaunchedEffect(Unit, allVisits) {
@@ -234,6 +251,21 @@ fun PsaWorkspaceScreen(
     // Auto-sync live official PSA prices when opening PSA or switching country
     LaunchedEffect(activeCountry.code) {
         viewModel.refreshOfficialPsaPrices(context, force = false)
+    }
+
+    // Consume hoisted Config triggers (Precios or Portal DIP opened from ⚙️ Config dialog)
+    LaunchedEffect(pendingConfigAction) {
+        when (pendingConfigAction) {
+            PsaConfigAction.PRICING -> {
+                showPricingDialog = true
+                onConsumeConfigAction()
+            }
+            PsaConfigAction.DIP_PORTAL -> {
+                showOfficialWebBrowser = true
+                onConsumeConfigAction()
+            }
+            null -> Unit
+        }
     }
 
     // Filter slots for the selected date
@@ -251,9 +283,6 @@ fun PsaWorkspaceScreen(
 
     val freeSlotsCount = currentDaySlots.count { it.status == PsaSlotStatus.FREE }
 
-    BackHandler {
-        onClose()
-    }
     BackHandler(enabled = drawerState.isOpen || !activeTab.isPrimaryTab) {
         when {
             drawerState.isOpen -> coroutineScope.launch { drawerState.close() }
@@ -280,6 +309,22 @@ fun PsaWorkspaceScreen(
                     coroutineScope.launch { drawerState.close() }
                     onOpenHelpGuide()
                 },
+                onOpenPricingSettings = {
+                    coroutineScope.launch { drawerState.close() }
+                    showPricingDialog = true
+                },
+                onOpenDipPortal = {
+                    coroutineScope.launch { drawerState.close() }
+                    showOfficialWebBrowser = true
+                },
+                showDashboardNav = showDashboardNav,
+                showSuperuserNav = showSuperuserNav,
+                showScriptsNav = showScriptsNav,
+                showAutomationNav = showAutomationNav,
+                onNavigateAppTab = { targetTab ->
+                    coroutineScope.launch { drawerState.close() }
+                    onNavigateAppTab(targetTab)
+                },
                 onCloseDrawer = {
                     coroutineScope.launch { drawerState.close() }
                 }
@@ -291,150 +336,56 @@ fun PsaWorkspaceScreen(
                 .fillMaxSize()
                 .background(SlateBackground)
         ) {
-            // --- HEADER LIMPIO Y ESPACIADO (Adaptable 140%–160%) ---
-            Column(
+            // --- HEADER ULTRA-LIMPIO (Solo Menú lateral, Marca PSA y País) ---
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Color(0xFF0E1826))
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = { coroutineScope.launch { drawerState.open() } },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("psa_btn_open_tools_drawer")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Menu,
-                                contentDescription = "Abrir menú de herramientas PSA",
-                                tint = PsaCyanGlow
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(4.dp))
-
-                        Text(
-                            text = "PSA",
-                            color = PsaCyanGlow,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            letterSpacing = 0.3.sp
-                        )
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        OutlinedButton(
-                            onClick = { showCountryPicker = true },
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, SlateCardBorder),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .testTag("psa_btn_country_picker")
-                        ) {
-                            Text(
-                                text = "${activeCountry.flag} ${activeCountry.currencyCode}",
-                                color = PsaCyanGlow,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { showOfficialWebBrowser = true },
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .testTag("psa_btn_portal_dip"),
-                            border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.45f))
-                        ) {
-                            Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp), tint = PsaCyanGlow)
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text("Portal DIP", color = PsaCyanGlow, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        }
-
-                        OutlinedButton(
-                            onClick = { showPricingDialog = true },
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .testTag("psa_btn_pricing_settings"),
-                            border = BorderStroke(1.dp, SlateCardBorder)
-                        ) {
-                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(15.dp), tint = TextPrimary)
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text("Precios", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        }
-
-                        Button(
-                            onClick = { showNewVisitDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = PsaCyanPrimary),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .testTag("psa_btn_new_visit")
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Visita", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-
-            // --- SOLO 2 PESTAÑAS PRINCIPALES VISIBLES: AGENDA & DEMOSTRACIÓN ---
-            val primaryTabs = listOf(PsaWorkspaceTab.AGENDA, PsaWorkspaceTab.LIVE_DEMO)
-            val selectedPrimaryIndex = when (activeTab) {
-                PsaWorkspaceTab.LIVE_DEMO -> 1
-                else -> 0
-            }
-            TabRow(
-                selectedTabIndex = selectedPrimaryIndex,
-                containerColor = SlateBackground,
-                contentColor = PsaCyanGlow,
-                indicator = { tabPositions ->
-                    if (activeTab.isPrimaryTab) {
-                        TabRowDefaults.SecondaryIndicator(
-                            Modifier.tabIndicatorOffset(tabPositions[selectedPrimaryIndex]),
-                            color = PsaCyanGlow,
-                            height = 3.dp
-                        )
-                    }
-                }
-            ) {
-                primaryTabs.forEach { tab ->
-                    val isSelected = activeTab == tab
-                    Tab(
-                        selected = isSelected,
-                        onClick = { navigateToTab(tab) },
-                        text = {
-                            Text(
-                                text = tab.label,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 13.sp,
-                                color = if (isSelected) PsaCyanGlow else TextSecondary
-                            )
-                        },
+                    IconButton(
+                        onClick = { coroutineScope.launch { drawerState.open() } },
                         modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .testTag("psa_tab_${tab.name.lowercase()}")
+                            .size(48.dp)
+                            .testTag("psa_btn_open_tools_drawer")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Menu,
+                            contentDescription = "Abrir menú de herramientas PSA",
+                            tint = PsaCyanGlow
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    Text(
+                        text = "PSA",
+                        color = PsaCyanGlow,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        letterSpacing = 0.3.sp
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = { showCountryPicker = true },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, SlateCardBorder),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("psa_btn_country_picker")
+                ) {
+                    Text(
+                        text = "${activeCountry.flag} ${activeCountry.currencyCode}",
+                        color = PsaCyanGlow,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp
                     )
                 }
             }
@@ -576,6 +527,7 @@ fun PsaWorkspaceScreen(
             viewModel = viewModel,
             availableSlots = scheduleSlots.filter { it.status == PsaSlotStatus.FREE },
             pricingConfig = pricingConfig,
+            scheduleIntervalConfig = scheduleIntervalConfig,
             initialSlot = slotToBook,
             initialDateKey = slotToBook?.dateKey ?: selectedDateKey,
             onDismiss = {
@@ -764,9 +716,14 @@ private fun PsaAgendaTabContent(
 ) {
     val allVisits by viewModel.allPsaVisits.collectAsState()
     val allLeads by viewModel.allPsaLeads.collectAsState()
+    val scheduleIntervalConfig by viewModel.scheduleIntervalConfig.collectAsState()
+    val visitDurationOverrides by viewModel.visitDurationOverrides.collectAsState()
     val isLargeFont = LocalIsLargeFontMode.current
     var agendaSearchQuery by remember { mutableStateOf("") }
     var agendaSearchScope by remember { mutableStateOf(AgendaSearchScope.ALL) }
+    var selectedTimeWindow by remember { mutableStateOf(AgendaTimeWindowFilter.ALL) }
+    var selectedStatusFilter by remember { mutableStateOf(AgendaVisitStatusFilter.ALL) }
+    var showIntervalConfigDialog by remember { mutableStateOf(false) }
     var showNewPostSaleDialog by remember { mutableStateOf(false) }
     var postSaleDialogVisit by remember { mutableStateOf<PsaHomeVisit?>(null) }
     var postSaleCustomerName by remember { mutableStateOf("") }
@@ -779,6 +736,24 @@ private fun PsaAgendaTabContent(
 
     val displayDatesByKey = remember(uniqueDates) {
         uniqueDates.toMap()
+    }
+    val statusCounts = remember(allVisits, selectedDateKey, selectedTimeWindow) {
+        PsaScheduleManager.countVisitsByStatusForDate(allVisits, selectedDateKey, selectedTimeWindow)
+    }
+    val filteredDaySlots = remember(currentDaySlots, selectedTimeWindow) {
+        currentDaySlots.filter { PsaScheduleManager.matchesTimeWindow(it.startTime, selectedTimeWindow) }
+    }
+    val visibleFreeSlotsCount = remember(filteredDaySlots) {
+        filteredDaySlots.count { it.status == PsaSlotStatus.FREE }
+    }
+    val filteredVisitsForStatus = remember(allVisits, selectedDateKey, selectedStatusFilter, selectedTimeWindow) {
+        if (selectedStatusFilter == AgendaVisitStatusFilter.ALL) emptyList()
+        else PsaScheduleManager.filterVisitsByStatusAndWindow(
+            visits = allVisits,
+            selectedDateKey = selectedDateKey,
+            statusFilter = selectedStatusFilter,
+            timeWindow = selectedTimeWindow
+        )
     }
     val isSearchingAgenda = agendaSearchQuery.isNotBlank()
     val matchingVisits = remember(allVisits, agendaSearchQuery, agendaSearchScope, displayDatesByKey) {
@@ -816,12 +791,13 @@ private fun PsaAgendaTabContent(
         showNewPostSaleDialog = true
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
         // 0. Barra de búsqueda en tiempo real por nombre o fecha
         item {
             PsaAgendaSearchBar(
@@ -1170,82 +1146,133 @@ private fun PsaAgendaTabContent(
             }
         }
 
-        // Summary Banner
+        // Selector de intervalo de jornada / duración / margen traslado + filtro por franja
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SlateCard),
-                border = BorderStroke(1.dp, SlateCardBorder.copy(alpha = 0.65f)),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                FlowRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text(
-                            text = "Disponibilidad del Día",
-                            color = PsaCyanGlow,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = "$freeSlotsCount turnos libres para visitas",
-                            color = TextSecondary,
-                            fontSize = 12.sp
-                        )
-                    }
+            PsaAgendaScheduleIntervalCard(
+                intervalConfig = scheduleIntervalConfig,
+                selectedTimeWindow = selectedTimeWindow,
+                onSelectTimeWindow = { selectedTimeWindow = it },
+                onOpenIntervalConfigurator = { showIntervalConfigDialog = true }
+            )
+        }
 
-                    Box(
+        // Chips dinámicos de estado: Todas (defecto), Pendientes, Realizadas, Canceladas
+        item {
+            PsaAgendaStatusFilterBar(
+                selectedStatusFilter = selectedStatusFilter,
+                statusCounts = statusCounts,
+                onSelectStatusFilter = { selectedStatusFilter = it }
+            )
+        }
+
+        if (selectedStatusFilter == AgendaVisitStatusFilter.ALL) {
+            // Summary Banner
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SlateCard),
+                    border = BorderStroke(1.dp, SlateCardBorder.copy(alpha = 0.65f)),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    FlowRow(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(if (freeSlotsCount > 0) EmeraldSuccess.copy(alpha = 0.16f) else RoseError.copy(alpha = 0.16f))
-                            .border(1.dp, if (freeSlotsCount > 0) EmeraldSuccess.copy(alpha = 0.5f) else RoseError.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(
-                            text = if (freeSlotsCount > 0) "🟢 $freeSlotsCount Libres" else "🔴 Completo",
-                            color = if (freeSlotsCount > 0) EmeraldSuccess else RoseError,
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Column {
+                            Text(
+                                text = "Disponibilidad del Día",
+                                color = PsaCyanGlow,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                text = "$visibleFreeSlotsCount turnos libres para visitas",
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(if (visibleFreeSlotsCount > 0) EmeraldSuccess.copy(alpha = 0.16f) else RoseError.copy(alpha = 0.16f))
+                                .border(1.dp, if (visibleFreeSlotsCount > 0) EmeraldSuccess.copy(alpha = 0.5f) else RoseError.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                text = if (visibleFreeSlotsCount > 0) "🟢 $visibleFreeSlotsCount Libres" else "🔴 Completo",
+                                color = if (visibleFreeSlotsCount > 0) EmeraldSuccess else RoseError,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        // Legend (adaptive FlowRow)
-        item {
-            FlowRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(text = "🟢 Libre", fontSize = 11.sp, color = EmeraldSuccess)
-                Text(text = "🔴 Agendado", fontSize = 11.sp, color = RoseError)
-                Text(text = "🛡️ Margen", fontSize = 11.sp, color = AmberDelay)
-                Text(text = "⚪ Bloqueado", fontSize = 11.sp, color = TextMuted)
+            // Legend (adaptive FlowRow)
+            item {
+                FlowRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(text = "🟢 Libre", fontSize = 11.sp, color = EmeraldSuccess)
+                    Text(text = "🔴 Agendado", fontSize = 11.sp, color = RoseError)
+                    Text(text = "🛡️ Margen", fontSize = 11.sp, color = AmberDelay)
+                    Text(text = "⚪ Bloqueado", fontSize = 11.sp, color = TextMuted)
+                }
             }
-        }
 
-        // List of Slots
-        items(currentDaySlots) { slot ->
-            PsaSlotItemCard(
-                slot = slot,
-                allVisits = allVisits,
-                onToggleBlock = {
-                    viewModel.togglePsaSlotBlocked(context, slot.id)
-                },
-                onBookSlot = {
-                    onOpenNewVisitDialog(slot)
-                },
-                onStartDemo = onStartDemo,
-                onRegisterPostSaleFromVisit = { visit -> openPostSaleForm(visit) }
-            )
+            // List of Slots (filtered by time window)
+            items(filteredDaySlots, key = { it.id }) { slot ->
+                PsaSlotItemCard(
+                    slot = slot,
+                    allVisits = allVisits,
+                    travelBufferMinutes = scheduleIntervalConfig.travelBufferMinutes,
+                    onToggleBlock = {
+                        viewModel.togglePsaSlotBlocked(context, slot.id)
+                    },
+                    onBookSlot = {
+                        onOpenNewVisitDialog(slot)
+                    },
+                    onStartDemo = onStartDemo,
+                    onUpdateVisitStatus = { visit, newStatus ->
+                        viewModel.updatePsaVisitStatus(visit, newStatus)
+                    },
+                    onRegisterPostSaleFromVisit = { visit -> openPostSaleForm(visit) }
+                )
+            }
+        } else {
+            // Estado filtrado (Pendientes / Realizadas / Canceladas): Oculta huecos libres y muestra solo visitas filtradas
+            if (filteredVisitsForStatus.isEmpty()) {
+                item {
+                    PsaAgendaStatusEmptyCard(
+                        statusFilter = selectedStatusFilter,
+                        onShowAll = { selectedStatusFilter = AgendaVisitStatusFilter.ALL },
+                        onCreateVisit = { onOpenNewVisitDialog(null) }
+                    )
+                }
+            } else {
+                items(filteredVisitsForStatus, key = { "filtered_visit_${it.id}" }) { visit ->
+                    val visitDuration = visitDurationOverrides[visit.id] ?: scheduleIntervalConfig.demoDurationMinutes
+                    PsaAgendaVisitStatusCard(
+                        context = context,
+                        visit = visit,
+                        durationMinutes = visitDuration,
+                        travelBufferMinutes = scheduleIntervalConfig.travelBufferMinutes,
+                        onStartDemo = onStartDemo,
+                        onUpdateStatus = { targetVisit, newStatus ->
+                            viewModel.updatePsaVisitStatus(targetVisit, newStatus)
+                        },
+                        onRegisterPostSale = { selectedVisit -> openPostSaleForm(selectedVisit) }
+                    )
+                }
+            }
         }
 
         // --- SECCIÓN RECAMBIOS Y POSVENTA ---
@@ -1516,7 +1543,27 @@ private fun PsaAgendaTabContent(
         }
 
         item {
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(84.dp))
+        }
+    }
+
+        FloatingActionButton(
+            onClick = { onOpenNewVisitDialog(null) },
+            containerColor = PsaCyanPrimary,
+            contentColor = Color.Black,
+            shape = CircleShape,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(16.dp)
+                .sizeIn(minWidth = 56.dp, minHeight = 56.dp)
+                .testTag("psa_fab_new_visit")
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "Agendar nueva visita",
+                tint = Color.Black
+            )
         }
     }
 
@@ -1644,6 +1691,21 @@ private fun PsaAgendaTabContent(
             }
         )
     }
+    if (showIntervalConfigDialog) {
+        PsaScheduleIntervalDialog(
+            initialConfig = scheduleIntervalConfig,
+            onSave = { updatedConfig ->
+                viewModel.saveScheduleIntervalConfig(context, updatedConfig)
+                showIntervalConfigDialog = false
+                Toast.makeText(
+                    context,
+                    "✅ Horario actualizado: ${updatedConfig.workStartTime}–${updatedConfig.workEndTime} (${updatedConfig.demoDurationMinutes}m + ${updatedConfig.travelBufferMinutes}m traslado)",
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onDismiss = { showIntervalConfigDialog = false }
+        )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -1651,9 +1713,11 @@ private fun PsaAgendaTabContent(
 private fun PsaSlotItemCard(
     slot: PsaTimeSlot,
     allVisits: List<PsaHomeVisit>,
+    travelBufferMinutes: Int = 60,
     onToggleBlock: () -> Unit,
     onBookSlot: (PsaTimeSlot) -> Unit,
     onStartDemo: (PsaHomeVisit) -> Unit,
+    onUpdateVisitStatus: (PsaHomeVisit, PsaVisitStatus) -> Unit = { _, _ -> },
     onRegisterPostSaleFromVisit: (PsaHomeVisit) -> Unit = {}
 ) {
     val visit = allVisits.find { it.id == slot.visitId }
@@ -1860,6 +1924,28 @@ private fun PsaSlotItemCard(
                             Spacer(modifier = Modifier.width(5.dp))
                             Text("Posventa", color = EmeraldSuccess, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
+
+                        if (visit.status != PsaVisitStatus.CERRADA_EXITO) {
+                            OutlinedButton(
+                                onClick = { onUpdateVisitStatus(visit, PsaVisitStatus.CERRADA_EXITO) },
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, EmeraldSuccess.copy(alpha = 0.55f)),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Text("✓ Realizada", color = EmeraldSuccess, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = { onUpdateVisitStatus(visit, PsaVisitStatus.CANCELADA) },
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, RoseError.copy(alpha = 0.5f)),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) {
+                            Text("✕ Cancelar", color = RoseError, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             } else if (slot.status == PsaSlotStatus.BUFFER) {
@@ -1879,7 +1965,9 @@ private fun PsaSlotItemCard(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Margen automático de traslado",
+                        text = slot.assignedCustomerName.ifBlank {
+                            "Margen automático de traslado / demora (~${travelBufferMinutes} min)"
+                        },
                         color = AmberDelay,
                         fontSize = 11.5.sp
                     )
@@ -2676,6 +2764,7 @@ private fun PsaNewVisitDialog(
     viewModel: MainViewModel,
     availableSlots: List<PsaTimeSlot>,
     pricingConfig: PsaPricingConfig,
+    scheduleIntervalConfig: ScheduleIntervalConfig = ScheduleIntervalConfig(),
     initialSlot: PsaTimeSlot? = null,
     initialDateKey: String = "",
     onDismiss: () -> Unit
@@ -2702,7 +2791,10 @@ private fun PsaNewVisitDialog(
         mutableStateOf(initialSlot ?: availableSlots.firstOrNull { it.dateKey == selectedDate } ?: availableSlots.firstOrNull())
     }
     var customTimeText by remember {
-        mutableStateOf(initialSlot?.startTime ?: "16:00")
+        mutableStateOf(initialSlot?.startTime ?: scheduleIntervalConfig.workStartTime)
+    }
+    var selectedDurationMinutes by remember {
+        mutableIntStateOf(scheduleIntervalConfig.demoDurationMinutes)
     }
 
     val allPurifiers = remember(pricingConfig) { pricingConfig.getAllPurifiers() }
@@ -2992,6 +3084,48 @@ private fun PsaNewVisitDialog(
                     }
                 }
 
+                // Duración estimada de esta visita + margen de viaje/demora
+                item {
+                    val activeStart = if (isCustomTimeMode) customTimeText.trim() else selectedSlot?.startTime.orEmpty()
+                    val previewEnd = PsaScheduleManager.calculateEndTime(activeStart, selectedDurationMinutes)
+                    val previewBufferEnd = PsaScheduleManager.calculateEndTime(previewEnd, scheduleIntervalConfig.travelBufferMinutes)
+
+                    Text(text = "Duración de esta demostración:", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(ScheduleIntervalConfig.DURATION_OPTIONS) { mins ->
+                            val isSelected = selectedDurationMinutes == mins
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (isSelected) PsaCyanPrimary else SlateCard)
+                                    .border(1.dp, if (isSelected) PsaCyanGlow else SlateCardBorder, RoundedCornerShape(6.dp))
+                                    .clickable { selectedDurationMinutes = mins }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = "${mins}m",
+                                    color = if (isSelected) Color.Black else TextPrimary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                    if (activeStart.isNotBlank() && PsaScheduleManager.parseTimeMinutes(activeStart) != null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        val marginLabel = if (scheduleIntervalConfig.travelBufferMinutes > 0) {
+                            " • Margen viaje hasta $previewBufferEnd (+${scheduleIntervalConfig.travelBufferMinutes}m)"
+                        } else ""
+                        Text(
+                            text = "⏱️ Bloque: $activeStart – $previewEnd$marginLabel",
+                            color = AmberDelay,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+
                 // Modelo de interés
                 item {
                     Text(text = "Modelo de Purificador de Interés:", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
@@ -3052,7 +3186,8 @@ private fun PsaNewVisitDialog(
                         scheduledDate = selectedDate,
                         scheduledTime = finalTime,
                         modelInterest = selectedPurifier,
-                        notes = notes
+                        notes = notes,
+                        durationMinutes = selectedDurationMinutes
                     )
                     Toast.makeText(context, "✅ Visita agendada para el $selectedDate a las ${finalTime}hs", Toast.LENGTH_LONG).show()
                     onDismiss()

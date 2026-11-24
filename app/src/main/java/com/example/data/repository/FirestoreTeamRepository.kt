@@ -10,8 +10,13 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
+import com.example.data.model.ApprovalStatus
 import com.example.data.model.CloudAccessToken
 import com.example.data.model.CloudAccessTokenStatus
+import com.example.data.model.HierarchyRequest
+import com.example.data.model.HierarchyRequestStatus
+import com.example.data.model.HierarchyRequestType
+import com.example.data.model.HierarchyTreeBuilder
 import com.example.data.model.PsaContactLead
 import com.example.data.model.PsaHomeVisit
 import com.example.data.model.PsaLeadStatus
@@ -87,6 +92,7 @@ class FirestoreTeamRepository(context: Context) {
         private const val COLLECTION_SELLER_STATS = "seller_stats"
         private const val COLLECTION_APP_ERRORS = "AppErrors"
         private const val COLLECTION_ACCESS_TOKENS = "access_tokens"
+        private const val COLLECTION_HIERARCHY_REQUESTS = "hierarchy_requests"
         private const val KEY_DEVICE_ID = "persistent_hardware_device_id"
         private const val KEY_LAST_SYNCED_UID = "last_synced_seller_uid"
         const val BOOTSTRAP_ADMIN_EMAIL = "leonelizondo16@gmail.com"
@@ -284,7 +290,7 @@ class FirestoreTeamRepository(context: Context) {
             }
 
             val baseServerWallMs = cloudUser.lastOnlineVerifiedAtMs.takeIf { it > 0L } ?: System.currentTimeMillis()
-            if (cloudUser.isBlocked || cloudUser.isExpired) {
+            if (cloudUser.isBlocked || cloudUser.isExpired || cloudUser.isPendingApproval) {
                 return CloudAuthOutcome.Restricted(cloudUser, serverWallMs = baseServerWallMs)
             }
 
@@ -878,6 +884,16 @@ class FirestoreTeamRepository(context: Context) {
         val updateLockReason = (data["updateLockReason"] as? String).orEmpty().take(300)
         val accessToken = (data["accessToken"] as? String).orEmpty().trim().take(64)
             .ifBlank { "GOOGLE-AUTH" }
+        val parentEmail = normalizeEmail((data["parentEmail"] as? String).orEmpty()).take(120)
+        val supervisorChain = (data["supervisorChainEmails"] as? List<*>)
+            ?.mapNotNull { it as? String }
+            ?.let { HierarchyTreeBuilder.normalizeChain(it) }
+            .orEmpty()
+        val hierarchyDepth = ((data["hierarchyDepth"] as? Number)?.toInt() ?: supervisorChain.size).coerceIn(0, 15)
+        val approvalStatus = (data["approvalStatus"] as? String).orEmpty().ifBlank { ApprovalStatus.ACTIVE.name }
+        val canManageSubUsers = (data["canManageSubUsers"] as? Boolean) ?: false
+        val visibilityDepth = ((data["visibilityDepth"] as? Number)?.toInt() ?: 0).coerceIn(0, 10)
+        val requestedByEmail = normalizeEmail((data["requestedByEmail"] as? String).orEmpty()).take(120)
 
         return UserAccount(
             id = id,
@@ -900,7 +916,14 @@ class FirestoreTeamRepository(context: Context) {
             lastTamperAlertAtMs = lastTamperAlertAtMs,
             updateRequired = updateRequired,
             requiredVersionCode = requiredVersionCode,
-            updateLockReason = updateLockReason
+            updateLockReason = updateLockReason,
+            parentEmail = parentEmail,
+            supervisorChainSerialized = HierarchyTreeBuilder.serializeChain(supervisorChain),
+            hierarchyDepth = hierarchyDepth,
+            approvalStatus = approvalStatus,
+            canManageSubUsers = canManageSubUsers,
+            visibilityDepth = visibilityDepth,
+            requestedByEmail = requestedByEmail
         )
     }
 
@@ -908,6 +931,7 @@ class FirestoreTeamRepository(context: Context) {
         val ids = user.boundDeviceIds.take(5)
         val labels = alignLabelsWithIds(ids, user.boundDeviceLabels)
         val firestoreRole = if (user.role == "SUPERUSER") "SUPERUSER" else "OPERATOR"
+        val chain = HierarchyTreeBuilder.normalizeChain(user.supervisorChainEmails)
         return hashMapOf(
             "id" to user.id,
             "email" to normalizeEmail(user.email),
@@ -927,6 +951,13 @@ class FirestoreTeamRepository(context: Context) {
             "requiredVersionCode" to user.requiredVersionCode.coerceIn(0, 100000),
             "updateLockReason" to user.updateLockReason.take(300),
             "accessToken" to user.token.trim().ifBlank { "GOOGLE-AUTH" }.take(64),
+            "parentEmail" to normalizeEmail(user.parentEmail).take(120),
+            "supervisorChainEmails" to chain,
+            "hierarchyDepth" to user.hierarchyDepth.coerceIn(0, 15),
+            "approvalStatus" to user.approvalStatus.ifBlank { ApprovalStatus.ACTIVE.name },
+            "canManageSubUsers" to user.canManageSubUsers,
+            "visibilityDepth" to user.visibilityDepth.coerceIn(0, 10),
+            "requestedByEmail" to normalizeEmail(user.requestedByEmail).take(120),
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
@@ -935,6 +966,7 @@ class FirestoreTeamRepository(context: Context) {
     private fun userToUpdateMap(user: UserAccount): Map<String, Any> {
         val ids = user.boundDeviceIds.take(5)
         val labels = alignLabelsWithIds(ids, user.boundDeviceLabels)
+        val chain = HierarchyTreeBuilder.normalizeChain(user.supervisorChainEmails)
         return hashMapOf(
             "username" to user.username.trim().ifBlank { "Operador" }.take(80),
             "daysGranted" to user.daysGranted.coerceIn(0, 3650),
@@ -949,6 +981,13 @@ class FirestoreTeamRepository(context: Context) {
             "updateRequired" to user.updateRequired,
             "requiredVersionCode" to user.requiredVersionCode.coerceIn(0, 100000),
             "updateLockReason" to user.updateLockReason.take(300),
+            "parentEmail" to normalizeEmail(user.parentEmail).take(120),
+            "supervisorChainEmails" to chain,
+            "hierarchyDepth" to user.hierarchyDepth.coerceIn(0, 15),
+            "approvalStatus" to user.approvalStatus.ifBlank { ApprovalStatus.ACTIVE.name },
+            "canManageSubUsers" to user.canManageSubUsers,
+            "visibilityDepth" to user.visibilityDepth.coerceIn(0, 10),
+            "requestedByEmail" to normalizeEmail(user.requestedByEmail).take(120),
             "updatedAt" to FieldValue.serverTimestamp()
         )
     }
@@ -1215,6 +1254,18 @@ class FirestoreTeamRepository(context: Context) {
             "completedDemos" to stats.completedDemos.coerceIn(0, 100000),
             "closedSales" to stats.closedSales.coerceIn(0, 100000),
             "pendingReplacements" to stats.pendingReplacements.coerceIn(0, 100000),
+            "messagesSuccess" to stats.messagesSuccess.coerceIn(0, 1000000),
+            "messagesFailed" to stats.messagesFailed.coerceIn(0, 1000000),
+            "messagesTotal" to stats.messagesTotal.coerceIn(0, 1000000),
+            "callsAttempted" to stats.callsAttempted.coerceIn(0, 1000000),
+            "callsConnected" to stats.callsConnected.coerceIn(0, 1000000),
+            "lastMessageAtMs" to stats.lastMessageAtMs.coerceAtLeast(0L),
+            "lastActivityAtMs" to stats.lastActivityAtMs.coerceAtLeast(0L),
+            "lastActivityLabel" to stats.lastActivityLabel.trim().take(160),
+            "recentActivityJson" to stats.recentActivityJson.ifBlank { "[]" }.take(2500),
+            "parentEmail" to normalizeEmail(stats.parentEmail).take(120),
+            "supervisorChainEmails" to HierarchyTreeBuilder.normalizeChain(stats.supervisorChainEmails),
+            "hierarchyDepth" to stats.hierarchyDepth.coerceIn(0, 15),
             "updatedAt" to FieldValue.serverTimestamp()
         )
         return try {
@@ -1240,7 +1291,50 @@ class FirestoreTeamRepository(context: Context) {
                     return@addSnapshotListener
                 }
                 val list = snap?.documents?.mapNotNull { parseSellerStats(it) }.orEmpty()
-                    .sortedByDescending { it.closedSales }
+                    .sortedByDescending { it.lastActivityAtMs.coerceAtLeast(it.updatedAtMs) }
+                trySend(list)
+            }
+        awaitClose { reg.remove() }
+    }
+
+    fun observeSubordinateSellerStats(managerEmailRaw: String): Flow<List<SellerPerformanceStats>> = callbackFlow {
+        val managerEmail = normalizeEmail(managerEmailRaw)
+        if (managerEmail.isBlank()) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val reg = firestore
+            .collection(COLLECTION_SELLER_STATS)
+            .whereArrayContains("supervisorChainEmails", managerEmail)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.w(TAG, "observeSubordinateSellerStats error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                val list = snap?.documents?.mapNotNull { parseSellerStats(it) }.orEmpty()
+                    .sortedByDescending { it.lastActivityAtMs.coerceAtLeast(it.updatedAtMs) }
+                trySend(list)
+            }
+        awaitClose { reg.remove() }
+    }
+
+    fun observeSubordinateUsers(managerEmailRaw: String): Flow<List<UserAccount>> = callbackFlow {
+        val managerEmail = normalizeEmail(managerEmailRaw)
+        if (managerEmail.isBlank()) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val reg = firestore
+            .collection(COLLECTION_USERS)
+            .whereArrayContains("supervisorChainEmails", managerEmail)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.w(TAG, "observeSubordinateUsers error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                val list = snap?.documents?.mapNotNull { parseUserDocument(it) }.orEmpty()
                 trySend(list)
             }
         awaitClose { reg.remove() }
@@ -1250,7 +1344,7 @@ class FirestoreTeamRepository(context: Context) {
         return try {
             val snap = firestore.collection(COLLECTION_SELLER_STATS).get().await()
             snap.documents.mapNotNull { parseSellerStats(it) }
-                .sortedByDescending { it.closedSales }
+                .sortedByDescending { it.lastActivityAtMs.coerceAtLeast(it.updatedAtMs) }
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
@@ -1360,6 +1454,14 @@ class FirestoreTeamRepository(context: Context) {
         val data = doc.data ?: return null
         val ownerUid = (data["ownerUid"] as? String).orEmpty().ifBlank { doc.id }
         val updatedAtMs = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
+        val messagesSuccess = (data["messagesSuccess"] as? Number)?.toInt() ?: 0
+        val messagesFailed = (data["messagesFailed"] as? Number)?.toInt() ?: 0
+        val messagesTotal = ((data["messagesTotal"] as? Number)?.toInt() ?: (messagesSuccess + messagesFailed))
+            .coerceAtLeast(messagesSuccess + messagesFailed)
+        val chain = (data["supervisorChainEmails"] as? List<*>)
+            ?.mapNotNull { it as? String }
+            ?.let { HierarchyTreeBuilder.normalizeChain(it) }
+            .orEmpty()
         return SellerPerformanceStats(
             ownerUid = ownerUid,
             sellerName = (data["sellerName"] as? String).orEmpty().ifBlank { "Vendedor PSA" },
@@ -1369,6 +1471,18 @@ class FirestoreTeamRepository(context: Context) {
             completedDemos = (data["completedDemos"] as? Number)?.toInt() ?: 0,
             closedSales = (data["closedSales"] as? Number)?.toInt() ?: 0,
             pendingReplacements = (data["pendingReplacements"] as? Number)?.toInt() ?: 0,
+            messagesSuccess = messagesSuccess,
+            messagesFailed = messagesFailed,
+            messagesTotal = messagesTotal,
+            callsAttempted = (data["callsAttempted"] as? Number)?.toInt() ?: 0,
+            callsConnected = (data["callsConnected"] as? Number)?.toInt() ?: 0,
+            lastMessageAtMs = (data["lastMessageAtMs"] as? Number)?.toLong() ?: 0L,
+            lastActivityAtMs = (data["lastActivityAtMs"] as? Number)?.toLong() ?: updatedAtMs,
+            lastActivityLabel = (data["lastActivityLabel"] as? String).orEmpty(),
+            recentActivityJson = (data["recentActivityJson"] as? String).orEmpty().ifBlank { "[]" },
+            parentEmail = normalizeEmail((data["parentEmail"] as? String).orEmpty()),
+            supervisorChainEmails = chain,
+            hierarchyDepth = ((data["hierarchyDepth"] as? Number)?.toInt() ?: chain.size).coerceIn(0, 15),
             updatedAtMs = updatedAtMs
         )
     }
@@ -1799,6 +1913,412 @@ class FirestoreTeamRepository(context: Context) {
             redeemedAtMs = redeemedAtMs,
             expiresAtMs = expiresAtMs,
             createdByUid = (data["createdByUid"] as? String).orEmpty(),
+            createdAtMs = createdAtMs,
+            updatedAtMs = updatedAtMs
+        )
+    }
+
+    // =====================================================================
+    // PYRAMID HIERARCHY & SUB-USER APPROVAL QUEUE (/hierarchy_requests)
+    // =====================================================================
+
+    fun observeAllHierarchyRequests(): Flow<List<HierarchyRequest>> = callbackFlow {
+        val reg: ListenerRegistration = firestore
+            .collection(COLLECTION_HIERARCHY_REQUESTS)
+            .addSnapshotListener { snapshots, error ->
+                if (error != null) {
+                    handleFirestoreError("observeAllHierarchyRequests", error)
+                    return@addSnapshotListener
+                }
+                val list = snapshots?.documents
+                    ?.mapNotNull { parseHierarchyRequest(it) }
+                    .orEmpty()
+                    .sortedByDescending { it.createdAtMs }
+                trySend(list)
+            }
+        awaitClose { reg.remove() }
+    }
+
+    fun observeMyHierarchyRequests(managerEmailRaw: String): Flow<List<HierarchyRequest>> = callbackFlow {
+        val managerEmail = normalizeEmail(managerEmailRaw)
+        if (managerEmail.isBlank()) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val reg: ListenerRegistration = firestore
+            .collection(COLLECTION_HIERARCHY_REQUESTS)
+            .whereEqualTo("requestedByEmail", managerEmail)
+            .addSnapshotListener { snapshots, error ->
+                if (error != null) {
+                    handleFirestoreError("observeMyHierarchyRequests", error)
+                    return@addSnapshotListener
+                }
+                val list = snapshots?.documents
+                    ?.mapNotNull { parseHierarchyRequest(it) }
+                    .orEmpty()
+                    .sortedByDescending { it.createdAtMs }
+                trySend(list)
+            }
+        awaitClose { reg.remove() }
+    }
+
+    suspend fun submitHierarchyRequest(
+        requestType: HierarchyRequestType,
+        parentEmailRaw: String,
+        parentName: String,
+        targetEmailRaw: String,
+        targetUsername: String,
+        suggestedDays: Int,
+        maxDevices: Int,
+        notes: String
+    ): Result<HierarchyRequest> {
+        val currentUser = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Inicia sesión con Google primero."))
+        val requesterEmail = normalizeEmail(currentUser.email.orEmpty())
+        val requestedParentEmail = normalizeEmail(parentEmailRaw.ifBlank { requesterEmail })
+        val cleanTargetEmail = normalizeEmail(targetEmailRaw)
+        if (!cleanTargetEmail.contains("@") || cleanTargetEmail.length < 5) {
+            return Result.failure(IllegalArgumentException("Ingresa un correo de Google válido."))
+        }
+        if (cleanTargetEmail == requestedParentEmail) {
+            return Result.failure(IllegalArgumentException("Un usuario no puede asignarse debajo de sí mismo."))
+        }
+        val safeName = targetUsername.trim().ifBlank { cleanTargetEmail.substringBefore("@") }.take(80)
+        val safeDays = suggestedDays.coerceIn(1, 3650)
+        val safeDevices = maxDevices.coerceIn(1, 5)
+        val safeNotes = notes.trim().take(300)
+        val reqId = "req_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        val nowMs = System.currentTimeMillis()
+
+        val payload = hashMapOf<String, Any>(
+            "id" to reqId,
+            "requestType" to requestType.name,
+            "requestedParentEmail" to requestedParentEmail.take(120),
+            "requestedParentName" to parentName.trim().take(80),
+            "targetEmail" to cleanTargetEmail.take(120),
+            "targetUsername" to safeName,
+            "suggestedDays" to safeDays,
+            "maxDevices" to safeDevices,
+            "notes" to safeNotes,
+            "requestedByUid" to currentUser.uid.take(128),
+            "requestedByEmail" to requesterEmail.take(120),
+            "status" to HierarchyRequestStatus.PENDING.name,
+            "resolvedByEmail" to "",
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+
+        return try {
+            firestore.collection(COLLECTION_HIERARCHY_REQUESTS)
+                .document(reqId)
+                .set(payload)
+                .await()
+            Result.success(
+                HierarchyRequest(
+                    id = reqId,
+                    requestType = requestType.name,
+                    requestedParentEmail = requestedParentEmail,
+                    requestedParentName = parentName.trim(),
+                    targetEmail = cleanTargetEmail,
+                    targetUsername = safeName,
+                    suggestedDays = safeDays,
+                    maxDevices = safeDevices,
+                    notes = safeNotes,
+                    requestedByUid = currentUser.uid,
+                    requestedByEmail = requesterEmail,
+                    status = HierarchyRequestStatus.PENDING.name,
+                    resolvedByEmail = "",
+                    createdAtMs = nowMs,
+                    updatedAtMs = nowMs
+                )
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("submitHierarchyRequest", e)
+            val msg = if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                "No tienes permiso habilitado para proponer sub-usuarios. Solicítalo al Superusuario."
+            } else {
+                e.localizedMessage ?: e.code.name
+            }
+            Result.failure(Exception(msg))
+        } catch (e: Exception) {
+            handleFirestoreError("submitHierarchyRequest", e)
+            Result.failure(Exception("Error enviando solicitud: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun approveHierarchyRequestAndEnable(
+        request: HierarchyRequest,
+        allUsers: List<UserAccount>,
+        overrideDays: Int? = null,
+        allowSubManagement: Boolean = false,
+        visibilityDepth: Int = 0
+    ): Result<String> {
+        val adminUser = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Inicia sesión con Google de Superusuario."))
+        val resolverEmail = normalizeEmail(adminUser.email.orEmpty())
+        val targetEmail = normalizeEmail(request.targetEmail)
+        val requestedParent = normalizeEmail(request.requestedParentEmail)
+
+        if (HierarchyTreeBuilder.wouldCreateCycle(targetEmail, requestedParent, allUsers)) {
+            return Result.failure(IllegalStateException("No se puede aprobar porque crearía un ciclo jerárquico."))
+        }
+
+        return try {
+            val reqRef = firestore.collection(COLLECTION_HIERARCHY_REQUESTS).document(request.id)
+            val existingSnap = firestore.collection(COLLECTION_USERS).document(targetEmail).get(Source.SERVER).await()
+            val batch = firestore.batch()
+            val nowMs = System.currentTimeMillis()
+            val parentAccount = allUsers.find { it.normalizedEmail == requestedParent }
+            val parentChain = if (requestedParent.isBlank()) {
+                emptyList()
+            } else if (parentAccount != null) {
+                HierarchyTreeBuilder.normalizeChain(listOf(requestedParent) + parentAccount.supervisorChainEmails)
+            } else {
+                listOf(requestedParent)
+            }
+            val depth = if (requestedParent.isBlank()) 0 else (parentAccount?.hierarchyDepth ?: 0) + 1
+
+            if (existingSnap.exists()) {
+                val parsedExisting = parseUserDocument(existingSnap)
+                val mergedAllUsers = (allUsers.filterNot { it.normalizedEmail == targetEmail } + listOfNotNull(parsedExisting))
+                val cascade = HierarchyTreeBuilder.computeReParentCascadeUpdates(
+                    targetEmail = targetEmail,
+                    newParentEmail = requestedParent,
+                    allUsers = mergedAllUsers
+                )
+                cascade.forEach { step ->
+                    val ref = firestore.collection(COLLECTION_USERS).document(step.user.normalizedEmail)
+                    val isTarget = step.user.normalizedEmail == targetEmail
+                    val updateFields = hashMapOf<String, Any>(
+                        "parentEmail" to step.newParentEmail,
+                        "supervisorChainEmails" to step.newChain,
+                        "hierarchyDepth" to step.newDepth,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                    if (isTarget) {
+                        updateFields["approvalStatus"] = ApprovalStatus.ACTIVE.name
+                        updateFields["isBlocked"] = false
+                        updateFields["canManageSubUsers"] = allowSubManagement || step.user.canManageSubUsers
+                        updateFields["visibilityDepth"] = visibilityDepth.coerceIn(0, 10)
+                        if (overrideDays != null && overrideDays > 0) {
+                            val newExpiry = nowMs + (overrideDays.toLong() * 86_400_000L)
+                            updateFields["daysGranted"] = overrideDays.coerceIn(1, 3650)
+                            updateFields["expiresAt"] = Timestamp(Date(newExpiry))
+                        }
+                    }
+                    batch.update(ref, updateFields)
+                    if (step.user.ownerUid.isNotBlank()) {
+                        val statsRef = firestore.collection(COLLECTION_SELLER_STATS).document(step.user.ownerUid)
+                        val statsSnap = statsRef.get().await()
+                        if (statsSnap.exists()) {
+                            batch.update(
+                                statsRef,
+                                mapOf(
+                                    "parentEmail" to step.newParentEmail,
+                                    "supervisorChainEmails" to step.newChain,
+                                    "hierarchyDepth" to step.newDepth,
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                            )
+                        }
+                    }
+                }
+            } else {
+                val grantedDays = (overrideDays ?: request.suggestedDays).coerceIn(1, 3650)
+                val expiresAtMs = nowMs + (grantedDays.toLong() * 86_400_000L)
+                val newUser = UserAccount(
+                    id = "op_${UUID.randomUUID().toString().take(8)}",
+                    username = request.targetUsername.trim().ifBlank { targetEmail.substringBefore("@") }.take(80),
+                    token = "GOOGLE-AUTH",
+                    role = "OPERATOR",
+                    daysGranted = grantedDays,
+                    validFromMs = nowMs,
+                    expiresAtMs = expiresAtMs,
+                    isBlocked = false,
+                    notes = request.notes.ifBlank { "Alta bajo $requestedParent" }.take(300),
+                    createdAt = nowMs,
+                    canAccessLegacyModules = false,
+                    email = targetEmail,
+                    maxDevices = request.maxDevices.coerceIn(1, 5),
+                    parentEmail = requestedParent,
+                    supervisorChainSerialized = HierarchyTreeBuilder.serializeChain(parentChain),
+                    hierarchyDepth = depth.coerceIn(0, 15),
+                    approvalStatus = ApprovalStatus.ACTIVE.name,
+                    canManageSubUsers = allowSubManagement,
+                    visibilityDepth = visibilityDepth.coerceIn(0, 10),
+                    requestedByEmail = request.requestedByEmail
+                )
+                batch.set(
+                    firestore.collection(COLLECTION_USERS).document(targetEmail),
+                    userToCreateMap(newUser)
+                )
+            }
+
+            batch.update(
+                reqRef,
+                mapOf(
+                    "status" to HierarchyRequestStatus.APPROVED.name,
+                    "resolvedByEmail" to resolverEmail,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            batch.commit().await()
+            Result.success("${request.targetUsername} habilitado debajo de $requestedParent.")
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("approveHierarchyRequestAndEnable", e)
+            Result.failure(Exception("No se pudo aprobar la solicitud: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun rejectHierarchyRequest(requestId: String): Result<Unit> {
+        val adminUser = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Inicia sesión con Google de Superusuario."))
+        val resolverEmail = normalizeEmail(adminUser.email.orEmpty())
+        return try {
+            firestore.collection(COLLECTION_HIERARCHY_REQUESTS)
+                .document(requestId)
+                .update(
+                    mapOf(
+                        "status" to HierarchyRequestStatus.REJECTED.name,
+                        "resolvedByEmail" to resolverEmail,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("rejectHierarchyRequest", e)
+            Result.failure(Exception("No se pudo rechazar la solicitud: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun reassignUserParentInCloud(
+        targetEmailRaw: String,
+        newParentEmailRaw: String,
+        allUsers: List<UserAccount>
+    ): Result<Int> {
+        val cleanTarget = normalizeEmail(targetEmailRaw)
+        val cleanParent = normalizeEmail(newParentEmailRaw)
+        if (cleanTarget.isBlank()) {
+            return Result.failure(IllegalArgumentException("Usuario destino inválido."))
+        }
+        if (cleanParent.isNotBlank() && HierarchyTreeBuilder.wouldCreateCycle(cleanTarget, cleanParent, allUsers)) {
+            return Result.failure(IllegalStateException("Movimiento inválido: generaría un ciclo en la pirámide."))
+        }
+        val updates = HierarchyTreeBuilder.computeReParentCascadeUpdates(
+            targetEmail = cleanTarget,
+            newParentEmail = cleanParent,
+            allUsers = allUsers
+        )
+        if (updates.isEmpty()) {
+            return Result.failure(IllegalStateException("No se encontró el usuario en la estructura actual."))
+        }
+
+        return try {
+            val batch = firestore.batch()
+            for (step in updates) {
+                val userRef = firestore.collection(COLLECTION_USERS).document(step.user.normalizedEmail)
+                batch.update(
+                    userRef,
+                    mapOf(
+                        "parentEmail" to step.newParentEmail,
+                        "supervisorChainEmails" to step.newChain,
+                        "hierarchyDepth" to step.newDepth,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                if (step.user.ownerUid.isNotBlank()) {
+                    val statsRef = firestore.collection(COLLECTION_SELLER_STATS).document(step.user.ownerUid)
+                    val snap = statsRef.get().await()
+                    if (snap.exists()) {
+                        batch.update(
+                            statsRef,
+                            mapOf(
+                                "parentEmail" to step.newParentEmail,
+                                "supervisorChainEmails" to step.newChain,
+                                "hierarchyDepth" to step.newDepth,
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        )
+                    }
+                }
+            }
+            batch.commit().await()
+            Result.success(updates.size)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("reassignUserParentInCloud", e)
+            Result.failure(Exception("No se pudo mover la rama: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun updateHierarchyPermissionsInCloud(
+        emailRaw: String,
+        canManageSubUsers: Boolean,
+        visibilityDepth: Int,
+        approvalStatus: String? = null,
+        isBlocked: Boolean? = null,
+        grantDaysIfNeeded: Int? = null
+    ): Result<Unit> {
+        val emailKey = normalizeEmail(emailRaw)
+        if (emailKey.isBlank()) return Result.failure(IllegalArgumentException("Correo inválido."))
+        val payload = hashMapOf<String, Any>(
+            "canManageSubUsers" to canManageSubUsers,
+            "visibilityDepth" to visibilityDepth.coerceIn(0, 10),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        if (!approvalStatus.isNullOrBlank()) {
+            payload["approvalStatus"] = approvalStatus
+        }
+        if (isBlocked != null) {
+            payload["isBlocked"] = isBlocked
+        }
+        if (grantDaysIfNeeded != null && grantDaysIfNeeded > 0) {
+            val safeDays = grantDaysIfNeeded.coerceIn(1, 3650)
+            payload["daysGranted"] = safeDays
+            payload["expiresAt"] = Timestamp(Date(System.currentTimeMillis() + safeDays.toLong() * 86_400_000L))
+        }
+        return try {
+            firestore.collection(COLLECTION_USERS)
+                .document(emailKey)
+                .update(payload)
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("updateHierarchyPermissionsInCloud", e)
+            Result.failure(Exception("No se pudieron guardar los permisos: ${e.localizedMessage}"))
+        }
+    }
+
+    private fun parseHierarchyRequest(doc: DocumentSnapshot): HierarchyRequest? {
+        val data = doc.data ?: return null
+        val id = (data["id"] as? String).orEmpty().ifBlank { doc.id }
+        val createdAtMs = doc.getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
+        val updatedAtMs = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: createdAtMs
+        return HierarchyRequest(
+            id = id,
+            requestType = (data["requestType"] as? String).orEmpty().ifBlank { HierarchyRequestType.NEW_SUB_USER.name },
+            requestedParentEmail = normalizeEmail((data["requestedParentEmail"] as? String).orEmpty()),
+            requestedParentName = (data["requestedParentName"] as? String).orEmpty(),
+            targetEmail = normalizeEmail((data["targetEmail"] as? String).orEmpty()),
+            targetUsername = (data["targetUsername"] as? String).orEmpty(),
+            suggestedDays = ((data["suggestedDays"] as? Number)?.toInt() ?: 30).coerceIn(1, 3650),
+            maxDevices = ((data["maxDevices"] as? Number)?.toInt() ?: 1).coerceIn(1, 5),
+            notes = (data["notes"] as? String).orEmpty(),
+            requestedByUid = (data["requestedByUid"] as? String).orEmpty(),
+            requestedByEmail = normalizeEmail((data["requestedByEmail"] as? String).orEmpty()),
+            status = (data["status"] as? String).orEmpty().ifBlank { HierarchyRequestStatus.PENDING.name },
+            resolvedByEmail = normalizeEmail((data["resolvedByEmail"] as? String).orEmpty()),
             createdAtMs = createdAtMs,
             updatedAtMs = updatedAtMs
         )

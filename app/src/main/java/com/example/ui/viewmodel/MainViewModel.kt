@@ -37,6 +37,12 @@ import com.example.data.model.PsaAchievementBadge
 import com.example.data.model.PsaPostSaleInstallation
 import com.example.data.model.PsaPostSaleStatus
 import com.example.data.model.SellerPerformanceStats
+import com.example.data.model.ApprovalStatus
+import com.example.data.model.HierarchyRequest
+import com.example.data.model.HierarchyRequestStatus
+import com.example.data.model.HierarchyRequestType
+import com.example.data.model.HierarchyTreeBuilder
+import com.example.data.model.SellerActivityBucket
 import com.example.data.model.calculateNextReplacementTimestamp
 import com.example.BuildConfig
 import com.example.util.AccessLockReason
@@ -173,8 +179,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _accessTokenActionFeedback = MutableStateFlow<String?>(null)
     val accessTokenActionFeedback: StateFlow<String?> = _accessTokenActionFeedback.asStateFlow()
 
+    private val _subordinateUsers = MutableStateFlow<List<UserAccount>>(emptyList())
+    val subordinateUsers: StateFlow<List<UserAccount>> = _subordinateUsers.asStateFlow()
+
+    private val _hierarchyRequests = MutableStateFlow<List<HierarchyRequest>>(emptyList())
+    val hierarchyRequests: StateFlow<List<HierarchyRequest>> = _hierarchyRequests.asStateFlow()
+
+    private val _hierarchyActionFeedback = MutableStateFlow<String?>(null)
+    val hierarchyActionFeedback: StateFlow<String?> = _hierarchyActionFeedback.asStateFlow()
+
+    private val _isHierarchyActionBusy = MutableStateFlow(false)
+    val isHierarchyActionBusy: StateFlow<Boolean> = _isHierarchyActionBusy.asStateFlow()
+
     private var userListenerJob: Job? = null
     private var allUsersListenerJob: Job? = null
+    private var subordinateUsersListenerJob: Job? = null
+    private var hierarchyRequestsListenerJob: Job? = null
     private var roleMatrixListenerJob: Job? = null
     private var pricingSyncListenerJob: Job? = null
     private var appUpdateCheckJob: Job? = null
@@ -240,6 +260,125 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _sellerPerformanceBoard = MutableStateFlow<List<SellerPerformanceStats>>(emptyList())
     val sellerPerformanceBoard: StateFlow<List<SellerPerformanceStats>> = _sellerPerformanceBoard.asStateFlow()
+
+    val visibleHierarchyUsers: StateFlow<List<UserAccount>> = combine(
+        currentUser,
+        allUsers,
+        _subordinateUsers
+    ) { viewer, adminAllUsers, managerSubs ->
+        when {
+            viewer == null -> emptyList()
+            viewer.role == "SUPERUSER" -> adminAllUsers
+            else -> HierarchyTreeBuilder.getVisibleSubordinates(viewer, managerSubs)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val local7DayBuckets: StateFlow<List<SellerActivityBucket>> = combine(
+        allLogs,
+        allPsaInteractions
+    ) { logs, interactions ->
+        val psaMessages = interactions.filter { it.channel == "MESSAGE" }
+        val messageEvents = logs.map { it.timestamp to (it.status == "SUCCESS") } +
+            psaMessages.map { it.timestampMs to (it.result == "SUCCESS" || it.result == "RESCHEDULED") }
+        val callEvents = interactions.filter { it.channel == "CALL" }.map { it.timestampMs }
+        HierarchyTreeBuilder.buildLast7DaysBuckets(
+            deliveryTimestampsAndSuccess = messageEvents,
+            callTimestamps = callEvents
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val visibleSubordinateStats: StateFlow<List<SellerPerformanceStats>> = combine(
+        currentUser,
+        visibleHierarchyUsers,
+        _sellerPerformanceBoard,
+        allLogs,
+        allPsaLeads,
+        allPsaInteractions
+    ) { values ->
+        val viewer = values[0] as? UserAccount
+        @Suppress("UNCHECKED_CAST")
+        val visibleSubs = values[1] as List<UserAccount>
+        @Suppress("UNCHECKED_CAST")
+        val board = values[2] as List<SellerPerformanceStats>
+        @Suppress("UNCHECKED_CAST")
+        val logs = values[3] as List<DeliveryLog>
+        @Suppress("UNCHECKED_CAST")
+        val leads = values[4] as List<PsaContactLead>
+        @Suppress("UNCHECKED_CAST")
+        val interactions = values[5] as List<PsaContactInteraction>
+
+        if (viewer == null) return@combine emptyList()
+        val viewerEmail = viewer.normalizedEmail
+
+        val deliveryOk = logs.count { it.status == "SUCCESS" }
+        val deliveryFail = logs.count { it.status == "FAILED" }
+        val psaMsg = interactions.filter { it.channel == "MESSAGE" }
+        val psaMsgOk = psaMsg.count { it.result == "SUCCESS" || it.result == "RESCHEDULED" }
+        val psaMsgFail = psaMsg.count { it.result == "REJECTED" || it.result == "NO_ANSWER" }
+        val calls = interactions.filter { it.channel == "CALL" }
+        val callsAttempted = maxOf(leads.sumOf { it.callAttemptsCount }, calls.size)
+        val callsConnected = calls.count { it.result == "SUCCESS" || it.result == "RESCHEDULED" || it.result == "REJECTED" }
+        val bucketsJson = HierarchyTreeBuilder.serializeActivityBuckets(
+            HierarchyTreeBuilder.buildLast7DaysBuckets(
+                deliveryTimestampsAndSuccess = logs.map { it.timestamp to (it.status == "SUCCESS") } +
+                    psaMsg.map { it.timestampMs to (it.result == "SUCCESS" || it.result == "RESCHEDULED") },
+                callTimestamps = calls.map { it.timestampMs }
+            )
+        )
+        val latestMsgTs = maxOf(logs.maxOfOrNull { it.timestamp } ?: 0L, psaMsg.maxOfOrNull { it.timestampMs } ?: 0L)
+        val latestCallTs = calls.maxOfOrNull { it.timestampMs } ?: 0L
+        val selfLatestTs = maxOf(latestMsgTs, latestCallTs)
+        val selfLocalStats = SellerPerformanceStats(
+            ownerUid = viewer.ownerUid.ifBlank { viewer.id },
+            sellerName = viewer.username.ifBlank { "Mi Cuenta" },
+            sellerEmail = viewerEmail,
+            totalContacts = leads.size,
+            messagesSuccess = deliveryOk + psaMsgOk,
+            messagesFailed = deliveryFail + psaMsgFail,
+            messagesTotal = deliveryOk + deliveryFail + psaMsg.size,
+            callsAttempted = callsAttempted,
+            callsConnected = callsConnected,
+            lastMessageAtMs = latestMsgTs,
+            lastActivityAtMs = selfLatestTs,
+            lastActivityLabel = if (selfLatestTs > 0L) "Actividad local en dispositivo" else "Sin actividad reciente",
+            recentActivityJson = bucketsJson,
+            parentEmail = viewer.parentEmail,
+            supervisorChainEmails = viewer.supervisorChainEmails,
+            hierarchyDepth = viewer.hierarchyDepth,
+            updatedAtMs = selfLatestTs
+        )
+
+        if (viewer.role == "SUPERUSER") {
+            val merged = board.toMutableList()
+            if (viewerEmail.isNotBlank() && merged.none { it.sellerEmail.trim().lowercase() == viewerEmail }) {
+                if (selfLocalStats.messagesTotal > 0 || selfLocalStats.callsAttempted > 0 || selfLocalStats.totalContacts > 0) {
+                    merged.add(selfLocalStats)
+                }
+            }
+            merged.sortedByDescending { it.lastActivityAtMs.coerceAtLeast(it.updatedAtMs) }
+        } else {
+            val allowedEmails = visibleSubs.map { it.normalizedEmail }.toSet()
+            val filteredSubs = board.filter { stat ->
+                val email = stat.sellerEmail.trim().lowercase()
+                email in allowedEmails || (viewerEmail.isNotBlank() && email == viewerEmail)
+            }.toMutableList()
+            if (viewerEmail.isNotBlank() && filteredSubs.none { it.sellerEmail.trim().lowercase() == viewerEmail }) {
+                filteredSubs.add(selfLocalStats)
+            }
+            filteredSubs.sortedByDescending { it.lastActivityAtMs.coerceAtLeast(it.updatedAtMs) }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val pendingHierarchyRequestsCount: StateFlow<Int> = combine(
+        currentUser,
+        _hierarchyRequests
+    ) { viewer, reqs ->
+        if (viewer?.role == "SUPERUSER") {
+            reqs.count { it.parsedStatus == HierarchyRequestStatus.PENDING }
+        } else {
+            0
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     private val _apkDownloadUrl = MutableStateFlow(repository.getApkDownloadUrl())
     val apkDownloadUrl: StateFlow<String> = _apkDownloadUrl.asStateFlow()
@@ -375,6 +514,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _dailySlots = MutableStateFlow<List<Pair<String, String>>>(PsaScheduleManager.DEFAULT_HOURLY_RANGES)
     val dailySlots: StateFlow<List<Pair<String, String>>> = _dailySlots.asStateFlow()
+
+    private val _scheduleIntervalConfig = MutableStateFlow(com.example.data.model.ScheduleIntervalConfig())
+    val scheduleIntervalConfig: StateFlow<com.example.data.model.ScheduleIntervalConfig> = _scheduleIntervalConfig.asStateFlow()
+
+    private val _visitDurationOverrides = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val visitDurationOverrides: StateFlow<Map<String, Int>> = _visitDurationOverrides.asStateFlow()
 
     private val _roleVisibilityConfig = MutableStateFlow(com.example.data.model.RoleVisibilityConfig())
     val roleVisibilityConfig: StateFlow<com.example.data.model.RoleVisibilityConfig> = _roleVisibilityConfig.asStateFlow()
@@ -513,6 +658,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val securityPrefs = application.getSharedPreferences("app_security_prefs", Context.MODE_PRIVATE)
         _isGlobalLegacyEnabled.value = securityPrefs.getBoolean("global_legacy_modules_enabled", false)
         _dailySlots.value = PsaScheduleManager.getDailySlots(application)
+        _scheduleIntervalConfig.value = PsaScheduleManager.getScheduleIntervalConfig(application)
+        _visitDurationOverrides.value = PsaScheduleManager.getVisitDurationOverrides(application)
         _roleVisibilityConfig.value = repository.getRoleVisibilityConfig()
 
         viewModelScope.launch {
@@ -1171,10 +1318,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         allUsersListenerJob?.cancel()
+        subordinateUsersListenerJob?.cancel()
+        hierarchyRequestsListenerJob?.cancel()
         sellerStatsListenerJob?.cancel()
         appErrorsListenerJob?.cancel()
         accessTokensListenerJob?.cancel()
         if (signedUser.role == "SUPERUSER") {
+            _subordinateUsers.value = emptyList()
             allUsersListenerJob = viewModelScope.launch {
                 cloudRepo.observeAllAuthorizedUsers().collect { users ->
                     repository.replaceCloudUsersInCache(users)
@@ -1183,6 +1333,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             sellerStatsListenerJob = viewModelScope.launch {
                 cloudRepo.observeAllSellerStats().collect { stats ->
                     _sellerPerformanceBoard.value = stats
+                }
+            }
+            hierarchyRequestsListenerJob = viewModelScope.launch {
+                cloudRepo.observeAllHierarchyRequests().collect { requests ->
+                    _hierarchyRequests.value = requests
                 }
             }
             appErrorsListenerJob = viewModelScope.launch {
@@ -1196,9 +1351,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         } else {
-            _sellerPerformanceBoard.value = emptyList()
             _appErrors.value = emptyList()
             _cloudAccessTokens.value = emptyList()
+            if (signedUser.normalizedEmail.isNotBlank()) {
+                subordinateUsersListenerJob = viewModelScope.launch {
+                    cloudRepo.observeSubordinateUsers(signedUser.normalizedEmail).collect { subs ->
+                        _subordinateUsers.value = subs
+                    }
+                }
+                sellerStatsListenerJob = viewModelScope.launch {
+                    cloudRepo.observeSubordinateSellerStats(signedUser.normalizedEmail).collect { stats ->
+                        _sellerPerformanceBoard.value = stats
+                    }
+                }
+                if (signedUser.canManageSubUsers) {
+                    hierarchyRequestsListenerJob = viewModelScope.launch {
+                        cloudRepo.observeMyHierarchyRequests(signedUser.normalizedEmail).collect { requests ->
+                            _hierarchyRequests.value = requests
+                        }
+                    }
+                } else {
+                    _hierarchyRequests.value = emptyList()
+                }
+            } else {
+                _subordinateUsers.value = emptyList()
+                _sellerPerformanceBoard.value = emptyList()
+                _hierarchyRequests.value = emptyList()
+            }
         }
 
         workspaceBootstrapJob?.cancel()
@@ -1240,6 +1419,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun stopCloudTeamListeners() {
         userListenerJob?.cancel()
         allUsersListenerJob?.cancel()
+        subordinateUsersListenerJob?.cancel()
+        hierarchyRequestsListenerJob?.cancel()
         roleMatrixListenerJob?.cancel()
         pricingSyncListenerJob?.cancel()
         workspaceBootstrapJob?.cancel()
@@ -1251,6 +1432,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         accessTokensListenerJob?.cancel()
         userListenerJob = null
         allUsersListenerJob = null
+        subordinateUsersListenerJob = null
+        hierarchyRequestsListenerJob = null
         roleMatrixListenerJob = null
         pricingSyncListenerJob = null
         workspaceBootstrapJob = null
@@ -1380,6 +1563,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopCloudTeamListeners()
         _isCloudGoogleConnected.value = false
         _sellerPerformanceBoard.value = emptyList()
+        _subordinateUsers.value = emptyList()
+        _hierarchyRequests.value = emptyList()
+        _hierarchyActionFeedback.value = null
         _appErrors.value = emptyList()
         _cloudAccessTokens.value = emptyList()
         _accessTokenActionFeedback.value = null
@@ -1389,6 +1575,259 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         repository.logout()
         _googleAuthUiState.value = GoogleAuthUiState.Idle
+    }
+
+    // --- HIERARCHY & PYRAMID MANAGEMENT ACTIONS ---
+
+    fun clearHierarchyActionFeedback() {
+        _hierarchyActionFeedback.value = null
+    }
+
+    fun submitNewSubUserRequest(
+        targetEmail: String,
+        targetUsername: String,
+        suggestedDays: Int,
+        maxDevices: Int,
+        notes: String
+    ) {
+        val cloudRepo = repository.cloudTeamRepository
+        val viewer = currentUser.value
+        if (cloudRepo == null || viewer == null) {
+            _hierarchyActionFeedback.value = "Inicia sesión con Google para enviar solicitudes."
+            return
+        }
+        if (!viewer.canManageSubUsers && viewer.role != "SUPERUSER") {
+            _hierarchyActionFeedback.value = "El Superusuario aún no habilitó la creación de sub-usuarios en tu cuenta."
+            return
+        }
+        if (_isHierarchyActionBusy.value) return
+        viewModelScope.launch {
+            _isHierarchyActionBusy.value = true
+            try {
+                cloudRepo.submitHierarchyRequest(
+                    requestType = HierarchyRequestType.NEW_SUB_USER,
+                    parentEmailRaw = viewer.normalizedEmail,
+                    parentName = viewer.username,
+                    targetEmailRaw = targetEmail,
+                    targetUsername = targetUsername,
+                    suggestedDays = suggestedDays,
+                    maxDevices = maxDevices,
+                    notes = notes
+                ).fold(
+                    onSuccess = {
+                        _hierarchyActionFeedback.value = "✅ Solicitud enviada. El usuario quedará inactivo hasta que el Superusuario lo habilite."
+                    },
+                    onFailure = { err ->
+                        _hierarchyActionFeedback.value = err.message ?: "No se pudo enviar la solicitud."
+                    }
+                )
+            } finally {
+                _isHierarchyActionBusy.value = false
+            }
+        }
+    }
+
+    fun submitLinkExistingUserRequest(
+        existingUserEmail: String,
+        existingUsername: String,
+        notes: String
+    ) {
+        val cloudRepo = repository.cloudTeamRepository
+        val viewer = currentUser.value
+        if (cloudRepo == null || viewer == null) {
+            _hierarchyActionFeedback.value = "Inicia sesión con Google para solicitar vinculación."
+            return
+        }
+        if (!viewer.canManageSubUsers && viewer.role != "SUPERUSER") {
+            _hierarchyActionFeedback.value = "Tu cuenta requiere permiso del Superusuario para solicitar sub-usuarios."
+            return
+        }
+        if (_isHierarchyActionBusy.value) return
+        viewModelScope.launch {
+            _isHierarchyActionBusy.value = true
+            try {
+                cloudRepo.submitHierarchyRequest(
+                    requestType = HierarchyRequestType.LINK_EXISTING_USER,
+                    parentEmailRaw = viewer.normalizedEmail,
+                    parentName = viewer.username,
+                    targetEmailRaw = existingUserEmail,
+                    targetUsername = existingUsername,
+                    suggestedDays = 30,
+                    maxDevices = 1,
+                    notes = notes.ifBlank { "Solicito vincular este vendedor existente debajo de mi rama" }
+                ).fold(
+                    onSuccess = {
+                        _hierarchyActionFeedback.value = "✅ Solicitud de vinculación enviada. Aguarda aprobación del Superusuario."
+                    },
+                    onFailure = { err ->
+                        _hierarchyActionFeedback.value = err.message ?: "No se pudo enviar la solicitud."
+                    }
+                )
+            } finally {
+                _isHierarchyActionBusy.value = false
+            }
+        }
+    }
+
+    fun approveHierarchyRequest(
+        request: HierarchyRequest,
+        overrideDays: Int? = null,
+        allowSubManagement: Boolean = false,
+        visibilityDepth: Int = 0
+    ) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") {
+            _hierarchyActionFeedback.value = "Solo el Superusuario puede habilitar cuentas."
+            return
+        }
+        if (_isHierarchyActionBusy.value) return
+        viewModelScope.launch {
+            _isHierarchyActionBusy.value = true
+            try {
+                cloudRepo.approveHierarchyRequestAndEnable(
+                    request = request,
+                    allUsers = allUsers.value,
+                    overrideDays = overrideDays,
+                    allowSubManagement = allowSubManagement,
+                    visibilityDepth = visibilityDepth
+                ).fold(
+                    onSuccess = { msg ->
+                        _hierarchyActionFeedback.value = "✅ $msg"
+                    },
+                    onFailure = { err ->
+                        _hierarchyActionFeedback.value = err.message ?: "No se pudo aprobar la solicitud."
+                    }
+                )
+            } finally {
+                _isHierarchyActionBusy.value = false
+            }
+        }
+    }
+
+    fun rejectHierarchyRequest(requestId: String) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") return
+        if (_isHierarchyActionBusy.value) return
+        viewModelScope.launch {
+            _isHierarchyActionBusy.value = true
+            try {
+                cloudRepo.rejectHierarchyRequest(requestId).fold(
+                    onSuccess = {
+                        _hierarchyActionFeedback.value = "Solicitud marcada como rechazada."
+                    },
+                    onFailure = { err ->
+                        _hierarchyActionFeedback.value = err.message ?: "Error al rechazar solicitud."
+                    }
+                )
+            } finally {
+                _isHierarchyActionBusy.value = false
+            }
+        }
+    }
+
+    fun reassignUserParent(
+        targetEmail: String,
+        newParentEmail: String
+    ) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") {
+            _hierarchyActionFeedback.value = "Solo el Superusuario puede mover usuarios en la pirámide."
+            return
+        }
+        if (_isHierarchyActionBusy.value) return
+        viewModelScope.launch {
+            _isHierarchyActionBusy.value = true
+            try {
+                cloudRepo.reassignUserParentInCloud(
+                    targetEmailRaw = targetEmail,
+                    newParentEmailRaw = newParentEmail,
+                    allUsers = allUsers.value
+                ).fold(
+                    onSuccess = { updatedCount ->
+                        val dest = newParentEmail.ifBlank { "Raíz principal" }
+                        _hierarchyActionFeedback.value = "✅ Rama actualizada ($updatedCount cuenta(s) reordenadas bajo $dest)."
+                    },
+                    onFailure = { err ->
+                        _hierarchyActionFeedback.value = err.message ?: "No se pudo mover el usuario."
+                    }
+                )
+            } finally {
+                _isHierarchyActionBusy.value = false
+            }
+        }
+    }
+
+    fun updateUserHierarchyPermissions(
+        email: String,
+        canManageSubUsers: Boolean,
+        visibilityDepth: Int
+    ) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") {
+            _hierarchyActionFeedback.value = "Solo el Superusuario puede editar permisos jerárquicos."
+            return
+        }
+        if (_isHierarchyActionBusy.value) return
+        viewModelScope.launch {
+            _isHierarchyActionBusy.value = true
+            try {
+                cloudRepo.updateHierarchyPermissionsInCloud(
+                    emailRaw = email,
+                    canManageSubUsers = canManageSubUsers,
+                    visibilityDepth = visibilityDepth
+                ).fold(
+                    onSuccess = {
+                        val depthText = if (visibilityDepth <= 0) "toda su rama" else "$visibilityDepth nivel(es)"
+                        val manageText = if (canManageSubUsers) "con permiso sub-usuarios" else "solo vendedor"
+                        _hierarchyActionFeedback.value = "✅ Permisos guardados ($manageText • ve hasta $depthText)."
+                    },
+                    onFailure = { err ->
+                        _hierarchyActionFeedback.value = err.message ?: "No se pudieron guardar los permisos."
+                    }
+                )
+            } finally {
+                _isHierarchyActionBusy.value = false
+            }
+        }
+    }
+
+    fun toggleSellerActivationFromTree(
+        user: UserAccount,
+        enable: Boolean
+    ) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") {
+            _hierarchyActionFeedback.value = "Solo el Superusuario puede habilitar o pausar cuentas."
+            return
+        }
+        if (_isHierarchyActionBusy.value) return
+        viewModelScope.launch {
+            _isHierarchyActionBusy.value = true
+            try {
+                val grantDays = if (enable && user.isExpired) user.daysGranted.coerceAtLeast(30) else null
+                cloudRepo.updateHierarchyPermissionsInCloud(
+                    emailRaw = user.normalizedEmail,
+                    canManageSubUsers = user.canManageSubUsers,
+                    visibilityDepth = user.visibilityDepth,
+                    approvalStatus = if (enable) ApprovalStatus.ACTIVE.name else user.approvalStatus,
+                    isBlocked = !enable,
+                    grantDaysIfNeeded = grantDays
+                ).fold(
+                    onSuccess = {
+                        _hierarchyActionFeedback.value = if (enable) {
+                            "✅ Cuenta de ${user.username} habilitada."
+                        } else {
+                            "⛔ Cuenta de ${user.username} bloqueada."
+                        }
+                    },
+                    onFailure = { err ->
+                        _hierarchyActionFeedback.value = err.message ?: "No se pudo actualizar la cuenta."
+                    }
+                )
+            } finally {
+                _isHierarchyActionBusy.value = false
+            }
+        }
     }
 
     fun createAuthorizedGoogleUser(
@@ -2005,11 +2444,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         scheduledDate: String,
         scheduledTime: String,
         modelInterest: String,
-        notes: String = ""
+        notes: String = "",
+        durationMinutes: Int? = null
     ) {
         viewModelScope.launch {
+            val visitId = "psa_visit_${System.currentTimeMillis()}"
             val visit = PsaHomeVisit(
-                id = "psa_visit_${System.currentTimeMillis()}",
+                id = visitId,
                 customerName = customerName.trim(),
                 phone = phone.trim(),
                 address = address.trim(),
@@ -2020,6 +2461,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 status = PsaVisitStatus.AGENDADA,
                 notes = notes
             )
+            if (durationMinutes != null) {
+                PsaScheduleManager.saveVisitDurationOverride(context, visitId, durationMinutes)
+                _visitDurationOverrides.value = PsaScheduleManager.getVisitDurationOverrides(context)
+            }
             repository.insertPsaVisit(visit)
             refreshPsaSchedule(context)
         }
@@ -2027,7 +2472,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updatePsaVisitStatus(visit: PsaHomeVisit, newStatus: PsaVisitStatus) {
         viewModelScope.launch {
-            repository.updatePsaVisit(visit.copy(status = newStatus))
+            repository.updatePsaVisit(
+                visit.copy(
+                    status = newStatus,
+                    updatedAtMs = System.currentTimeMillis()
+                )
+            )
+            refreshPsaSchedule(getApplication())
         }
     }
 
@@ -2466,6 +2917,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun saveDailySlots(context: Context, slots: List<Pair<String, String>>) {
         PsaScheduleManager.saveDailySlots(context, slots)
         _dailySlots.value = slots
+        refreshPsaSchedule(context)
+    }
+
+    fun saveScheduleIntervalConfig(
+        context: Context,
+        config: com.example.data.model.ScheduleIntervalConfig
+    ) {
+        PsaScheduleManager.saveScheduleIntervalConfig(context, config)
+        _scheduleIntervalConfig.value = PsaScheduleManager.getScheduleIntervalConfig(context)
+        _dailySlots.value = PsaScheduleManager.getDailySlots(context)
         refreshPsaSchedule(context)
     }
 

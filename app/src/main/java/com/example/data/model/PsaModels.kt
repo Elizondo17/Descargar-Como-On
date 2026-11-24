@@ -549,8 +549,32 @@ data class SellerPerformanceStats(
     val completedDemos: Int = 0,
     val closedSales: Int = 0,
     val pendingReplacements: Int = 0,
+    val messagesSuccess: Int = 0,
+    val messagesFailed: Int = 0,
+    val messagesTotal: Int = 0,
+    val callsAttempted: Int = 0,
+    val callsConnected: Int = 0,
+    val lastMessageAtMs: Long = 0L,
+    val lastActivityAtMs: Long = 0L,
+    val lastActivityLabel: String = "",
+    val recentActivityJson: String = "[]",
+    val parentEmail: String = "",
+    val supervisorChainEmails: List<String> = emptyList(),
+    val hierarchyDepth: Int = 0,
     val updatedAtMs: Long = 0L
-)
+) {
+    val messagingSuccessRate: Float
+        get() = if (messagesTotal > 0) (messagesSuccess * 100f / messagesTotal) else 0f
+
+    val messagingFailureRate: Float
+        get() = if (messagesTotal > 0) (messagesFailed * 100f / messagesTotal) else 0f
+
+    val callConnectionRate: Float
+        get() = if (callsAttempted > 0) (callsConnected * 100f / callsAttempted) else 0f
+
+    val parsedRecentBuckets: List<SellerActivityBucket>
+        get() = HierarchyTreeBuilder.parseActivityBuckets(recentActivityJson)
+}
 
 fun calculateNextReplacementTimestamp(installedAtMs: Long, months: Int): Long {
     val safeMonths = when (months) {
@@ -563,3 +587,40 @@ fun calculateNextReplacementTimestamp(installedAtMs: Long, months: Int): Long {
     }
     return cal.timeInMillis
 }
+
+enum class AgendaTimeWindowFilter(val label: String) {
+    ALL("Todo"),
+    MORNING("Mañana"),
+    AFTERNOON("Tarde"),
+    EVENING("Noche")
+}
+
+enum class AgendaVisitStatusFilter(val label: String) {
+    ALL("Todas"),
+    PENDING("Pendientes"),
+    COMPLETED("Realizadas"),
+    CANCELLED("Canceladas");
+
+    fun matchesVisitStatus(status: PsaVisitStatus): Boolean = when (this) {
+        ALL -> true
+        PENDING -> status == PsaVisitStatus.AGENDADA ||
+            status == PsaVisitStatus.CONFIRMADA ||
+            status == PsaVisitStatus.EN_DEMOSTRACION ||
+            status == PsaVisitStatus.REPROGRAMAR
+        COMPLETED -> status == PsaVisitStatus.CERRADA_EXITO
+        CANCELLED -> status == PsaVisitStatus.CANCELADA
+    }
+}
+
+data class ScheduleIntervalConfig(
+    val workStartTime: String = "09:00",
+    val workEndTime: String = "20:30",
+    val demoDurationMinutes: Int = 60,
+    val travelBufferMinutes: Int = 60
+) {
+    companion object {
+        val DURATION_OPTIONS = listOf(30, 45, 60, 90, 120)
+        val BUFFER_OPTIONS = listOf(0, 30, 45, 60, 90)
+    }
+}
+

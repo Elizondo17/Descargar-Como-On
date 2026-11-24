@@ -12,6 +12,7 @@ import com.example.data.repository.FirestoreTeamRepository
 
 enum class AccessLockReason {
     NONE,
+    PENDING_SUPERUSER_APPROVAL,
     ADMIN_BLOCKED,
     UPDATE_REQUIRED,
     DAYS_EXPIRED,
@@ -216,6 +217,18 @@ object LicenseSecurityGuard {
                 lastOnlineVerifiedAtMs = maxOf(user.lastOnlineVerifiedAtMs, nowDeviceWallMs),
                 estimatedRealNowMs = nowDeviceWallMs,
                 pendingTamperAlertAtMs = 0L
+            )
+        }
+
+        if (user.isPendingApproval) {
+            return LicenseEvaluationResult(
+                reason = AccessLockReason.PENDING_SUPERUSER_APPROVAL,
+                remainingDays = 0L,
+                isExpiringSoon = false,
+                offlineElapsedMs = 0L,
+                lastOnlineVerifiedAtMs = maxOf(user.lastOnlineVerifiedAtMs, getLastVerifiedServerWallMs(context)),
+                estimatedRealNowMs = nowDeviceWallMs,
+                pendingTamperAlertAtMs = getPendingTamperReportMs(context)
             )
         }
 

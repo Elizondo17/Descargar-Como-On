@@ -107,12 +107,14 @@ fun RestrictedAccessScreen(
 
     val effectiveReason = when {
         lockReason != AccessLockReason.NONE -> lockReason
+        user.isPendingApproval -> AccessLockReason.PENDING_SUPERUSER_APPROVAL
         user.isBlocked -> AccessLockReason.ADMIN_BLOCKED
         else -> AccessLockReason.DAYS_EXPIRED
     }
 
     val accentColor = when (effectiveReason) {
         AccessLockReason.UPDATE_REQUIRED -> PsaCyanGlow
+        AccessLockReason.PENDING_SUPERUSER_APPROVAL,
         AccessLockReason.OFFLINE_OVER_24H,
         AccessLockReason.REBOOT_VERIFICATION_REQUIRED -> AmberDelay
         else -> RoseError
@@ -120,6 +122,7 @@ fun RestrictedAccessScreen(
 
     val headerIcon = when (effectiveReason) {
         AccessLockReason.UPDATE_REQUIRED -> Icons.Default.SystemUpdate
+        AccessLockReason.PENDING_SUPERUSER_APPROVAL -> Icons.Default.Schedule
         AccessLockReason.DAYS_EXPIRED -> Icons.Default.EventBusy
         AccessLockReason.OFFLINE_OVER_24H -> Icons.Default.WifiOff
         AccessLockReason.REBOOT_VERIFICATION_REQUIRED -> Icons.Default.Refresh
@@ -129,6 +132,7 @@ fun RestrictedAccessScreen(
 
     val titleText = when (effectiveReason) {
         AccessLockReason.UPDATE_REQUIRED -> "ACTUALIZACIÓN REQUERIDA"
+        AccessLockReason.PENDING_SUPERUSER_APPROVAL -> "CUENTA PENDIENTE DE HABILITACIÓN"
         AccessLockReason.DAYS_EXPIRED -> "SE ACABARON TUS DÍAS DE USO"
         AccessLockReason.OFFLINE_OVER_24H -> "CONEXIÓN REQUERIDA"
         AccessLockReason.REBOOT_VERIFICATION_REQUIRED -> "VERIFICACIÓN INICIAL REQUERIDA"
@@ -140,6 +144,8 @@ fun RestrictedAccessScreen(
         AccessLockReason.UPDATE_REQUIRED ->
             updateLockReasonText.takeIf { it.isNotBlank() }
                 ?: "Tu acceso se encuentra pausado temporalmente hasta que descargues e instales la nueva versión de Como On. Al abrir la app actualizada (o si el Administrador la habilita), tu cuenta se reactivará automáticamente."
+        AccessLockReason.PENDING_SUPERUSER_APPROVAL ->
+            "Tu sub-usuario fue solicitado en la estructura del equipo, pero aún requiere la habilitación final del Superusuario. Apenas el Superusuario lo active, podrás presionar 'Validar Ahora' para ingresar."
         AccessLockReason.DAYS_EXPIRED ->
             "Se acabaron los días de uso habilitados para tu cuenta. Contacta al Administrador para habilitar más días y continuar utilizando la aplicación."
         AccessLockReason.OFFLINE_OVER_24H ->
@@ -154,6 +160,7 @@ fun RestrictedAccessScreen(
 
     val statusLabel = when (effectiveReason) {
         AccessLockReason.UPDATE_REQUIRED -> if (requiredVersionCode > 0) "Requiere Comp. >= $requiredVersionCode" else "Actualización pendiente"
+        AccessLockReason.PENDING_SUPERUSER_APPROVAL -> "Esperando habilitación de Superusuario"
         AccessLockReason.DAYS_EXPIRED -> "Días de uso agotados"
         AccessLockReason.OFFLINE_OVER_24H -> if (isNetworkOnline) "Listo para validar con red" else "Sin conexión (+24 hs)"
         AccessLockReason.REBOOT_VERIFICATION_REQUIRED -> if (isNetworkOnline) "Validación pendiente" else "Sin conexión a internet"

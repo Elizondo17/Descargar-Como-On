@@ -42,8 +42,17 @@ service cloud.firestore {
              (isSignedIn() &&
               exists(/databases/$(database)/documents/authorized_users/$(authEmail())) &&
               get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.isBlocked == false &&
+              (!('approvalStatus' in get(/databases/$(database)/documents/authorized_users/$(authEmail())).data) ||
+               get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.approvalStatus == 'ACTIVE') &&
               get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.expiresAt > request.time &&
               get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.boundDeviceIds.size() > 0);
+    }
+
+    function isAuthorizedSubManager() {
+      return isSuperuser() ||
+             (isActiveAuthorizedMember() &&
+              ('canManageSubUsers' in get(/databases/$(database)/documents/authorized_users/$(authEmail())).data) &&
+              get(/databases/$(database)/documents/authorized_users/$(authEmail())).data.canManageSubUsers == true);
     }
 
     function isValidAuthorizedUser(data, emailKey) {
@@ -59,7 +68,9 @@ service cloud.firestore {
                'notes', 'maxDevices', 'boundDeviceIds', 'boundDeviceLabels',
                'ownerUid', 'createdAt', 'updatedAt', 'lastTamperAlertAtMs',
                'updateRequired', 'requiredVersionCode', 'updateLockReason',
-               'accessToken'
+               'accessToken', 'parentEmail', 'supervisorChainEmails',
+               'hierarchyDepth', 'approvalStatus', 'canManageSubUsers',
+               'visibilityDepth', 'requestedByEmail'
              ]) &&
              data.id is string && data.id.size() >= 3 && data.id.size() <= 80 &&
              data.email is string && data.email == emailKey &&
@@ -86,7 +97,14 @@ service cloud.firestore {
              (!('updateRequired' in data) || data.updateRequired is bool) &&
              (!('requiredVersionCode' in data) || (data.requiredVersionCode is int && data.requiredVersionCode >= 0 && data.requiredVersionCode <= 100000)) &&
              (!('updateLockReason' in data) || (data.updateLockReason is string && data.updateLockReason.size() <= 300)) &&
-             (!('accessToken' in data) || (data.accessToken is string && data.accessToken.size() <= 64));
+             (!('accessToken' in data) || (data.accessToken is string && data.accessToken.size() <= 64)) &&
+             (!('parentEmail' in data) || (data.parentEmail is string && data.parentEmail.size() <= 120)) &&
+             (!('supervisorChainEmails' in data) || (data.supervisorChainEmails is list && data.supervisorChainEmails.size() <= 10)) &&
+             (!('hierarchyDepth' in data) || (data.hierarchyDepth is int && data.hierarchyDepth >= 0 && data.hierarchyDepth <= 15)) &&
+             (!('approvalStatus' in data) || (data.approvalStatus in ['ACTIVE', 'PENDING_APPROVAL', 'REJECTED'])) &&
+             (!('canManageSubUsers' in data) || data.canManageSubUsers is bool) &&
+             (!('visibilityDepth' in data) || (data.visibilityDepth is int && data.visibilityDepth >= 0 && data.visibilityDepth <= 10)) &&
+             (!('requestedByEmail' in data) || (data.requestedByEmail is string && data.requestedByEmail.size() <= 120));
     }
 
     function isValidTeamConfig(data, configId) {
@@ -119,10 +137,16 @@ service cloud.firestore {
 
     match /authorized_users/{emailKey} {
       allow get: if isValidEmailKey(emailKey) &&
-                    (isSuperuser() || (isSignedIn() && emailKey == authEmail()));
+                    (isSuperuser() ||
+                     (isSignedIn() &&
+                      (emailKey == authEmail() ||
+                       (('supervisorChainEmails' in resource.data) && (authEmail() in resource.data.supervisorChainEmails)))));
 
-      // Only bootstrap admin uses list queries so allow list contains zero get()/exists() calls
-      allow list: if isBootstrapAdmin();
+      // Zero get()/exists() inside allow list: Bootstrap admin OR ancestor present in supervisorChainEmails
+      allow list: if isBootstrapAdmin() ||
+                     (isSignedIn() &&
+                      ('supervisorChainEmails' in resource.data) &&
+                      (authEmail() in resource.data.supervisorChainEmails));
 
       allow create: if isValidEmailKey(emailKey) &&
                        isValidAuthorizedUser(request.resource.data, emailKey) &&
@@ -145,6 +169,7 @@ service cloud.firestore {
                          (isSignedIn() &&
                           emailKey == authEmail() &&
                           resource.data.isBlocked == false &&
+                          (!('approvalStatus' in resource.data) || resource.data.approvalStatus == 'ACTIVE') &&
                           resource.data.expiresAt > request.time &&
                           request.resource.data.diff(resource.data).affectedKeys()
                             .hasOnly([
@@ -285,7 +310,12 @@ service cloud.firestore {
              ]) &&
              data.keys().hasOnly([
                'ownerUid', 'sellerName', 'sellerEmail', 'totalContacts', 'totalVisits',
-               'completedDemos', 'closedSales', 'pendingReplacements', 'updatedAt'
+               'completedDemos', 'closedSales', 'pendingReplacements',
+               'messagesSuccess', 'messagesFailed', 'messagesTotal',
+               'callsAttempted', 'callsConnected', 'lastMessageAtMs',
+               'lastActivityAtMs', 'lastActivityLabel', 'recentActivityJson',
+               'parentEmail', 'supervisorChainEmails', 'hierarchyDepth',
+               'updatedAt'
              ]) &&
              data.ownerUid is string && data.ownerUid == ownerUid &&
              data.sellerName is string && data.sellerName.size() >= 1 && data.sellerName.size() <= 80 &&
@@ -295,6 +325,18 @@ service cloud.firestore {
              data.completedDemos is int && data.completedDemos >= 0 && data.completedDemos <= 100000 &&
              data.closedSales is int && data.closedSales >= 0 && data.closedSales <= 100000 &&
              data.pendingReplacements is int && data.pendingReplacements >= 0 && data.pendingReplacements <= 100000 &&
+             (!('messagesSuccess' in data) || (data.messagesSuccess is int && data.messagesSuccess >= 0 && data.messagesSuccess <= 1000000)) &&
+             (!('messagesFailed' in data) || (data.messagesFailed is int && data.messagesFailed >= 0 && data.messagesFailed <= 1000000)) &&
+             (!('messagesTotal' in data) || (data.messagesTotal is int && data.messagesTotal >= 0 && data.messagesTotal <= 1000000)) &&
+             (!('callsAttempted' in data) || (data.callsAttempted is int && data.callsAttempted >= 0 && data.callsAttempted <= 1000000)) &&
+             (!('callsConnected' in data) || (data.callsConnected is int && data.callsConnected >= 0 && data.callsConnected <= 1000000)) &&
+             (!('lastMessageAtMs' in data) || (data.lastMessageAtMs is int && data.lastMessageAtMs >= 0)) &&
+             (!('lastActivityAtMs' in data) || (data.lastActivityAtMs is int && data.lastActivityAtMs >= 0)) &&
+             (!('lastActivityLabel' in data) || (data.lastActivityLabel is string && data.lastActivityLabel.size() <= 160)) &&
+             (!('recentActivityJson' in data) || (data.recentActivityJson is string && data.recentActivityJson.size() <= 2500)) &&
+             (!('parentEmail' in data) || (data.parentEmail is string && data.parentEmail.size() <= 120)) &&
+             (!('supervisorChainEmails' in data) || (data.supervisorChainEmails is list && data.supervisorChainEmails.size() <= 10)) &&
+             (!('hierarchyDepth' in data) || (data.hierarchyDepth is int && data.hierarchyDepth >= 0 && data.hierarchyDepth <= 15)) &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
@@ -341,12 +383,24 @@ service cloud.firestore {
     }
 
     match /seller_stats/{ownerUid} {
-      allow get: if isOwner(ownerUid) || isBootstrapAdmin();
-      allow list: if isBootstrapAdmin();
+      allow get: if isOwner(ownerUid) ||
+                    isBootstrapAdmin() ||
+                    (isSignedIn() &&
+                     ('supervisorChainEmails' in resource.data) &&
+                     (authEmail() in resource.data.supervisorChainEmails));
+      allow list: if isBootstrapAdmin() ||
+                     (isSignedIn() &&
+                      ('supervisorChainEmails' in resource.data) &&
+                      (authEmail() in resource.data.supervisorChainEmails));
       allow create: if isOwner(ownerUid) && isValidSellerStats(request.resource.data, ownerUid);
-      allow update: if isOwner(ownerUid) &&
-                       isValidSellerStats(request.resource.data, ownerUid) &&
-                       request.resource.data.ownerUid == resource.data.ownerUid;
+      allow update: if isValidSellerStats(request.resource.data, ownerUid) &&
+                       request.resource.data.ownerUid == resource.data.ownerUid &&
+                       (
+                         isOwner(ownerUid) ||
+                         (isSuperuser() &&
+                          request.resource.data.diff(resource.data).affectedKeys()
+                            .hasOnly(['parentEmail', 'supervisorChainEmails', 'hierarchyDepth', 'updatedAt']))
+                       );
       allow delete: if isBootstrapAdmin();
     }
 
@@ -448,6 +502,8 @@ service cloud.firestore {
              userData.role == 'OPERATOR' &&
              userData.isBlocked == false &&
              userData.canAccessLegacyModules == false &&
+             (!('canManageSubUsers' in userData) || userData.canManageSubUsers == false) &&
+             (!('approvalStatus' in userData) || userData.approvalStatus == 'ACTIVE') &&
              userData.ownerUid == request.auth.uid &&
              userData.boundDeviceIds.size() == 1 &&
              ('accessToken' in userData) &&
@@ -515,6 +571,86 @@ service cloud.firestore {
                        );
 
       allow delete: if isValidTokenCode(tokenCode) && isSuperuser();
+    }
+
+    function isValidHierarchyRequestId(requestId) {
+      return requestId is string &&
+             requestId.size() >= 3 &&
+             requestId.size() <= 80 &&
+             requestId.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidHierarchyRequest(data, requestId) {
+      return data.keys().hasAll([
+               'id', 'requestType', 'requestedParentEmail', 'requestedParentName',
+               'targetEmail', 'targetUsername', 'suggestedDays', 'maxDevices',
+               'notes', 'requestedByUid', 'requestedByEmail', 'status',
+               'resolvedByEmail', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'requestType', 'requestedParentEmail', 'requestedParentName',
+               'targetEmail', 'targetUsername', 'suggestedDays', 'maxDevices',
+               'notes', 'requestedByUid', 'requestedByEmail', 'status',
+               'resolvedByEmail', 'createdAt', 'updatedAt'
+             ]) &&
+             data.id is string && data.id == requestId &&
+             data.requestType in ['NEW_SUB_USER', 'LINK_EXISTING_USER'] &&
+             data.requestedParentEmail is string && isValidEmailKey(data.requestedParentEmail) &&
+             data.requestedParentName is string && data.requestedParentName.size() <= 80 &&
+             data.targetEmail is string && isValidEmailKey(data.targetEmail) &&
+             data.targetEmail != data.requestedParentEmail &&
+             data.targetUsername is string && data.targetUsername.size() >= 1 && data.targetUsername.size() <= 80 &&
+             data.suggestedDays is int && data.suggestedDays >= 1 && data.suggestedDays <= 3650 &&
+             data.maxDevices is int && data.maxDevices >= 1 && data.maxDevices <= 5 &&
+             data.notes is string && data.notes.size() <= 300 &&
+             data.requestedByUid is string && data.requestedByUid.size() >= 1 && data.requestedByUid.size() <= 128 &&
+             data.requestedByEmail is string && isValidEmailKey(data.requestedByEmail) &&
+             data.status in ['PENDING', 'APPROVED', 'REJECTED'] &&
+             data.resolvedByEmail is string && data.resolvedByEmail.size() <= 120 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /hierarchy_requests/{requestId} {
+      allow get: if isValidHierarchyRequestId(requestId) &&
+                    (
+                      isSuperuser() ||
+                      (isSignedIn() && (
+                        resource.data.requestedByUid == request.auth.uid ||
+                        resource.data.requestedByEmail == authEmail() ||
+                        resource.data.targetEmail == authEmail()
+                      ))
+                    );
+
+      // Zero get()/exists() in allow list: Bootstrap admin OR requests submitted by the signed-in manager
+      allow list: if isBootstrapAdmin() ||
+                     (isSignedIn() && resource.data.requestedByEmail == authEmail());
+
+      allow create: if isValidHierarchyRequestId(requestId) &&
+                       isValidHierarchyRequest(request.resource.data, requestId) &&
+                       request.resource.data.status == 'PENDING' &&
+                       request.resource.data.requestedByUid == request.auth.uid &&
+                       request.resource.data.requestedByEmail == authEmail() &&
+                       request.resource.data.resolvedByEmail == '' &&
+                       isAuthorizedSubManager() &&
+                       (isSuperuser() || request.resource.data.requestedParentEmail == authEmail());
+
+      allow update: if isValidHierarchyRequestId(requestId) &&
+                       isSuperuser() &&
+                       isValidHierarchyRequest(request.resource.data, requestId) &&
+                       request.resource.data.id == resource.data.id &&
+                       request.resource.data.requestType == resource.data.requestType &&
+                       request.resource.data.requestedByUid == resource.data.requestedByUid &&
+                       request.resource.data.requestedByEmail == resource.data.requestedByEmail &&
+                       request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if isValidHierarchyRequestId(requestId) &&
+                       (
+                         isSuperuser() ||
+                         (isSignedIn() &&
+                          resource.data.requestedByEmail == authEmail() &&
+                          resource.data.status == 'PENDING')
+                       );
     }
   }
 }

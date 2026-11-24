@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,15 +25,21 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.AttachMoney
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.DrawerDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -55,6 +62,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.AppTab
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IndigoPrimary
 import com.example.ui.theme.PurpleNeon
@@ -74,6 +82,13 @@ fun PsaToolsDrawerSheet(
     onSelectTab: (PsaWorkspaceTab) -> Unit,
     onOpenAdvisorQuiz: () -> Unit,
     onOpenHelpGuide: () -> Unit,
+    onOpenPricingSettings: () -> Unit = {},
+    onOpenDipPortal: () -> Unit = {},
+    showDashboardNav: Boolean = false,
+    showSuperuserNav: Boolean = false,
+    showScriptsNav: Boolean = false,
+    showAutomationNav: Boolean = false,
+    onNavigateAppTab: (AppTab) -> Unit = {},
     onCloseDrawer: () -> Unit
 ) {
     ModalDrawerSheet(
@@ -88,7 +103,8 @@ fun PsaToolsDrawerSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 14.dp)
+                .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             // Brand header inside lateral drawer
@@ -147,26 +163,26 @@ fun PsaToolsDrawerSheet(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            DrawerSectionLabel(title = "ESPACIO PRINCIPAL")
-
-            PsaDrawerItemRow(
-                label = "Agenda",
-                subtitle = "Turnos libres y visitas",
-                icon = Icons.Default.CalendarMonth,
-                selected = activeTab == PsaWorkspaceTab.AGENDA,
-                accentColor = PsaCyanGlow,
-                testTag = "psa_drawer_item_agenda",
-                onClick = { onSelectTab(PsaWorkspaceTab.AGENDA) }
-            )
+            DrawerSectionLabel(title = "PRINCIPAL")
 
             PsaDrawerItemRow(
                 label = "Demostración",
-                subtitle = "Pruebas de cloro y sarro",
+                subtitle = "Vista principal • Cloro y sarro",
                 icon = Icons.Default.Science,
                 selected = activeTab == PsaWorkspaceTab.LIVE_DEMO,
                 accentColor = PsaCyanGlow,
                 testTag = "psa_drawer_item_demo",
                 onClick = { onSelectTab(PsaWorkspaceTab.LIVE_DEMO) }
+            )
+
+            PsaDrawerItemRow(
+                label = "Agenda",
+                subtitle = "Turnos libres, búsqueda y visitas",
+                icon = Icons.Default.CalendarMonth,
+                selected = activeTab == PsaWorkspaceTab.AGENDA,
+                accentColor = PsaCyanGlow,
+                testTag = "psa_drawer_item_agenda",
+                onClick = { onSelectTab(PsaWorkspaceTab.AGENDA) }
             )
 
             HorizontalDivider(
@@ -252,6 +268,90 @@ fun PsaToolsDrawerSheet(
                 testTag = "psa_drawer_item_help_guide",
                 onClick = onOpenHelpGuide
             )
+
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 6.dp),
+                color = SlateCardBorder.copy(alpha = 0.65f)
+            )
+
+            DrawerSectionLabel(title = "CONFIGURACIÓN PSA")
+
+            PsaDrawerItemRow(
+                label = "Precios y Cuotas",
+                subtitle = "Lista oficial, planes y horarios",
+                icon = Icons.Default.Settings,
+                selected = false,
+                accentColor = PsaCyanGlow,
+                testTag = "psa_drawer_item_pricing",
+                onClick = onOpenPricingSettings
+            )
+
+            PsaDrawerItemRow(
+                label = "Portal DIP Oficial",
+                subtitle = "Web mi.psa.com.ar y PVP",
+                icon = Icons.Default.CloudSync,
+                selected = false,
+                accentColor = EmeraldSuccess,
+                testTag = "psa_drawer_item_dip_portal",
+                onClick = onOpenDipPortal
+            )
+
+            if (showDashboardNav || showSuperuserNav || showScriptsNav || showAutomationNav) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 6.dp),
+                    color = SlateCardBorder.copy(alpha = 0.65f)
+                )
+
+                DrawerSectionLabel(title = "NAVEGACIÓN Y EQUIPO")
+
+                if (showDashboardNav) {
+                    PsaDrawerItemRow(
+                        label = "Panel y Estadísticas",
+                        subtitle = "Métricas y equipo comercial",
+                        icon = Icons.Default.Assessment,
+                        selected = false,
+                        accentColor = IndigoPrimary,
+                        testTag = "psa_drawer_item_nav_dashboard",
+                        onClick = { onNavigateAppTab(AppTab.DASHBOARD) }
+                    )
+                }
+
+                if (showSuperuserNav) {
+                    PsaDrawerItemRow(
+                        label = "Administración",
+                        subtitle = "Licencias, usuarios y jerarquía",
+                        icon = Icons.Default.AdminPanelSettings,
+                        selected = false,
+                        accentColor = PurpleNeon,
+                        testTag = "psa_drawer_item_nav_superuser",
+                        onClick = { onNavigateAppTab(AppTab.SUPERUSER) }
+                    )
+                }
+
+                if (showScriptsNav) {
+                    PsaDrawerItemRow(
+                        label = "Scripts",
+                        subtitle = "Plantillas de contacto",
+                        icon = Icons.Default.Description,
+                        selected = false,
+                        accentColor = IndigoPrimary,
+                        testTag = "psa_drawer_item_nav_scripts",
+                        onClick = { onNavigateAppTab(AppTab.SCRIPTS) }
+                    )
+                }
+
+                if (showAutomationNav) {
+                    PsaDrawerItemRow(
+                        label = "Envíos",
+                        subtitle = "Automatización de campañas",
+                        icon = Icons.Default.Bolt,
+                        selected = false,
+                        accentColor = EmeraldSuccess,
+                        testTag = "psa_drawer_item_nav_automation",
+                        onClick = { onNavigateAppTab(AppTab.AUTOMATION) }
+                    )
+                }
+            }
         }
     }
 }
@@ -363,7 +463,7 @@ fun PsaSecondaryToolContextBar(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (lastPrimaryTab == PsaWorkspaceTab.LIVE_DEMO) "Demostración" else "Agenda",
+                    text = if (lastPrimaryTab == PsaWorkspaceTab.LIVE_DEMO) "Demostración" else lastPrimaryTab.label,
                     color = PsaCyanGlow,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 12.sp

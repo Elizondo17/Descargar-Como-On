@@ -949,4 +949,81 @@ test("Hierarchy rules: authorized manager submits PENDING requests, superuser ac
   await assertFails(peerDb.collection("seller_stats").doc("uid-sub-1").get());
 });
 
+test("Superuser can resolve and delete legacy or skewed AppErrors documents while sellers remain denied", async () => {
+  const legacyId = "legacy-err.001";
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("AppErrors").doc(legacyId).set({
+      id: "mismatched_internal_id",
+      ownerUid: "uid-seller-legacy",
+      stage: "LEGACY_STAGE",
+      errorMessage: "Legacy error record",
+      status: "OPEN",
+      occurredAtMs: 1700000000000,
+      createdAt: new Date(Date.now() + 60_000),
+      updatedAt: pastDate(500),
+    });
+  });
 
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", { email: ADMIN_EMAIL, email_verified: true })
+    .firestore();
+  const sellerDb = testEnv
+    .authenticatedContext("uid-seller-legacy", { email: OP_EMAIL, email_verified: true })
+    .firestore();
+
+  // Seller cannot resolve or delete
+  await assertFails(
+    sellerDb.collection("AppErrors").doc(legacyId).update({
+      status: "RESOLVED",
+      updatedAt: pastDate(100),
+    })
+  );
+  await assertFails(sellerDb.collection("AppErrors").doc(legacyId).delete());
+
+  // Superuser can mark RESOLVED, reopen OPEN, and delete legacy doc
+  await assertSucceeds(
+    adminDb.collection("AppErrors").doc(legacyId).update({
+      status: "RESOLVED",
+      updatedAt: pastDate(100),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("AppErrors").doc(legacyId).update({
+      status: "OPEN",
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertSucceeds(adminDb.collection("AppErrors").doc(legacyId).delete());
+});
+
+test("Superuser can block an operator and expire license at 0 days", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("authorized_users").doc(OP_EMAIL).set(buildUserDoc());
+  });
+
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", { email: ADMIN_EMAIL, email_verified: true })
+    .firestore();
+  const opDb = testEnv
+    .authenticatedContext("uid-op", { email: OP_EMAIL, email_verified: true })
+    .firestore();
+
+  await assertSucceeds(
+    adminDb.collection("authorized_users").doc(OP_EMAIL).update({
+      daysGranted: 0,
+      expiresAt: pastDate(60_000),
+      isBlocked: true,
+      updatedAt: pastDate(100),
+    })
+  );
+
+  // Blocked & expired operator can no longer claim a device slot
+  await assertFails(
+    opDb.collection("authorized_users").doc(OP_EMAIL).update({
+      ownerUid: "uid-op",
+      boundDeviceIds: ["dev-blocked"],
+      boundDeviceLabels: ["Pixel"],
+      updatedAt: pastDate(50),
+    })
+  );
+});

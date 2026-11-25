@@ -154,7 +154,7 @@ object LicenseSecurityGuard {
             .putLong(KEY_LAST_VERIFIED_DEVICE_WALL_MS, deviceWallMs)
             .putLong(KEY_LAST_VERIFIED_ELAPSED_MS, elapsedMs)
             .putLong(KEY_LAST_SEEN_ELAPSED_MS, elapsedMs)
-            .putLong(KEY_LAST_SEEN_WALL_MS, maxOf(safeServerWall, deviceWallMs))
+            .putLong(KEY_LAST_SEEN_WALL_MS, safeServerWall)
             .putInt(KEY_LAST_VERIFIED_BOOT_COUNT, bootCount)
             .putLong(KEY_SERVER_OFFSET_MS, offsetMs)
             .putBoolean(KEY_TAMPER_FLAG, false)
@@ -284,17 +284,20 @@ object LicenseSecurityGuard {
             (nowElapsedMs + 30_000L < lastVerifiedElapsedMs)
         val sameBootSession = !bootCountChanged && !elapsedResetDetected && nowElapsedMs >= lastSeenElapsedMs
 
-        // Detect device clock rollback
+        val adjustedNowMs = nowDeviceWallMs + serverOffsetMs
+        // Detect device clock rollback (both within the same boot and across device reboots)
         if (!tamperFlag) {
             val rollbackSameBoot = sameBootSession && lastSeenElapsedMs > 0L && run {
                 val monotonicExpectedWall = lastSeenWallMs + (nowElapsedMs - lastSeenElapsedMs).coerceAtLeast(0L)
-                (nowDeviceWallMs + serverOffsetMs + CLOCK_ROLLBACK_TOLERANCE_MS) < monotonicExpectedWall &&
-                    (nowDeviceWallMs + CLOCK_ROLLBACK_TOLERANCE_MS) < lastSeenWallMs
+                (adjustedNowMs + CLOCK_ROLLBACK_TOLERANCE_MS) < monotonicExpectedWall &&
+                    (adjustedNowMs + CLOCK_ROLLBACK_TOLERANCE_MS) < lastSeenWallMs
             }
-            val rollbackBeforeLastVerified = (nowDeviceWallMs + serverOffsetMs + CLOCK_ROLLBACK_TOLERANCE_MS) < lastVerifiedServerWallMs ||
+            val rollbackCrossReboot = lastSeenWallMs > 0L &&
+                (adjustedNowMs + CLOCK_ROLLBACK_TOLERANCE_MS) < lastSeenWallMs
+            val rollbackBeforeLastVerified = (adjustedNowMs + CLOCK_ROLLBACK_TOLERANCE_MS) < lastVerifiedServerWallMs ||
                 (lastVerifiedDeviceWallMs > 0L && (nowDeviceWallMs + CLOCK_ROLLBACK_TOLERANCE_MS) < lastVerifiedDeviceWallMs)
 
-            if (rollbackSameBoot || rollbackBeforeLastVerified) {
+            if (rollbackSameBoot || rollbackCrossReboot || rollbackBeforeLastVerified) {
                 tamperFlag = true
                 val estimatedAnomalyTime = maxOf(
                     lastSeenWallMs + (nowElapsedMs - lastSeenElapsedMs).coerceAtLeast(0L),
@@ -308,7 +311,11 @@ object LicenseSecurityGuard {
             } else if (sameBootSession) {
                 prefs.edit()
                     .putLong(KEY_LAST_SEEN_ELAPSED_MS, nowElapsedMs)
-                    .putLong(KEY_LAST_SEEN_WALL_MS, maxOf(lastSeenWallMs, nowDeviceWallMs))
+                    .putLong(KEY_LAST_SEEN_WALL_MS, maxOf(lastSeenWallMs, adjustedNowMs))
+                    .apply()
+            } else if (adjustedNowMs > lastSeenWallMs) {
+                prefs.edit()
+                    .putLong(KEY_LAST_SEEN_WALL_MS, maxOf(lastSeenWallMs, adjustedNowMs))
                     .apply()
             }
         }

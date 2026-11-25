@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.LocalDrink
 import androidx.compose.material.icons.filled.Paid
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Send
@@ -112,6 +113,7 @@ import java.util.Locale
 import androidx.compose.runtime.LaunchedEffect
 import com.example.util.DemoBudgetPaymentMode
 import com.example.util.DemoToBudgetHandoff
+import com.example.util.PsaDemoAiContext
 
 data class PurifierOption(
     val id: String,
@@ -129,7 +131,9 @@ fun PsaBudgetTabContent(
     activeCountry: PsaCountryConfig = PsaCountryRegistry.defaultCountry(),
     initialHandoff: DemoToBudgetHandoff? = null,
     onRegisterPostSale: ((customerName: String, purifierId: String, purifierName: String, cycleMonths: Int) -> Unit)? = null,
-    onOpenPricingSettings: () -> Unit
+    onOpenPricingSettings: () -> Unit,
+    onOpenAiAssistant: (() -> Unit)? = null,
+    onAiContextChanged: ((PsaDemoAiContext) -> Unit)? = null
 ) {
     val financingConfig by viewModel.psaFinancingConfig.collectAsState()
     val isLargeFont = LocalIsLargeFontMode.current
@@ -241,6 +245,22 @@ fun PsaBudgetTabContent(
     val total3YearBidonExpense = monthlyBidonExpense * 36
     val total3YearNetSavings = (total3YearBidonExpense - totalGrossPrice).coerceAtLeast(0.0)
 
+    LaunchedEffect(cartLines, clientName, monthlyBidonExpense, cartSummaryTitle) {
+        val wellIds = setOf("ropot", "rotech", "domus", "descalcificador")
+        val ids = cartLines.map { it.first.id }
+        val inferredSource = if (ids.any { it in wellIds }) "AGUA_DE_POZO" else "AGUA_CORRIENTE"
+        onAiContextChanged?.invoke(
+            PsaDemoAiContext(
+                sourceOrigin = "Cotizador",
+                waterSource = inferredSource,
+                annualBottledSpend = monthlyBidonExpense * 12.0,
+                cartModelIds = ids,
+                cartSummary = cartSummaryTitle,
+                clientName = clientName.trim()
+            )
+        )
+    }
+
     val cashDiscountPercent = cashDiscountPercentText.toDoubleOrNull() ?: 0.0
     val cashDiscountAmount = totalGrossPrice * (cashDiscountPercent / 100.0)
     val cashTotalWithDiscount = (totalGrossPrice - cashDiscountAmount).coerceAtLeast(0.0)
@@ -320,16 +340,42 @@ fun PsaBudgetTabContent(
                             }
                         }
 
-                        IconButton(
-                            onClick = { showPrivateProfit = !showPrivateProfit },
-                            modifier = Modifier.size(48.dp)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = if (showPrivateProfit) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                contentDescription = "Ganancia DIP privada",
-                                tint = if (showPrivateProfit) EmeraldSuccess else TextMuted,
-                                modifier = Modifier.size(20.dp)
-                            )
+                            if (onOpenAiAssistant != null) {
+                                OutlinedButton(
+                                    onClick = onOpenAiAssistant,
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, PsaCyanGlow.copy(alpha = 0.7f)),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("budget_open_psa_ai_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Psychology,
+                                        contentDescription = "Asistente IA PSA",
+                                        tint = PsaCyanGlow,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("IA PSA", color = PsaCyanGlow, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { showPrivateProfit = !showPrivateProfit },
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (showPrivateProfit) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = "Ganancia DIP privada",
+                                    tint = if (showPrivateProfit) EmeraldSuccess else TextMuted,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         }
                     }
                 }

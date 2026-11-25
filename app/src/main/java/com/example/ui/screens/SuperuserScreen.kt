@@ -174,6 +174,7 @@ fun SuperuserScreen(
     val cloudAccessTokens by viewModel.cloudAccessTokens.collectAsState()
     val isRefreshingAccessTokens by viewModel.isRefreshingAccessTokens.collectAsState()
     val accessTokenActionFeedback by viewModel.accessTokenActionFeedback.collectAsState()
+    val adminUserActionFeedback by viewModel.adminUserActionFeedback.collectAsState()
     val businessProfile by viewModel.businessProfile.collectAsState()
     val allScannedChats by viewModel.allScannedChats.collectAsState()
     val isGlobalLegacyEnabled by viewModel.isGlobalLegacyEnabled.collectAsState()
@@ -222,6 +223,14 @@ fun SuperuserScreen(
         if (!msg.isNullOrBlank()) {
             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             viewModel.clearAccessTokenFeedback()
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(adminUserActionFeedback) {
+        val msg = adminUserActionFeedback
+        if (!msg.isNullOrBlank()) {
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            viewModel.clearAdminUserActionFeedback()
         }
     }
 
@@ -2076,65 +2085,77 @@ fun SuperuserScreen(
                                 OutlinedButton(
                                     onClick = { viewModel.adjustUserDays(user.id, -1) },
                                     shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = RoseError),
-                                    modifier = Modifier.heightIn(min = 36.dp)
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("admin_btn_minus1d_${user.id}")
                                 ) {
-                                    Icon(imageVector = Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(12.dp))
-                                    Text("1d", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Icon(imageVector = Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Text("1d", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                                 }
 
                                 OutlinedButton(
                                     onClick = { viewModel.adjustUserDays(user.id, 1) },
                                     shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldSuccess),
-                                    modifier = Modifier.heightIn(min = 36.dp)
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("admin_btn_plus1d_${user.id}")
                                 ) {
-                                    Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(12.dp))
-                                    Text("1d", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Text("1d", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                                 }
 
                                 OutlinedButton(
                                     onClick = { viewModel.adjustUserDays(user.id, 7) },
                                     shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldSuccess),
-                                    modifier = Modifier.heightIn(min = 36.dp)
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("admin_btn_plus7d_${user.id}")
                                 ) {
-                                    Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(12.dp))
-                                    Text("7d", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Text("7d", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                                 }
 
                                 Button(
                                     onClick = { editingUser = user },
                                     shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
-                                    modifier = Modifier.heightIn(min = 36.dp)
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("admin_btn_edit_user_${user.id}")
                                 ) {
                                     Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Editar", fontSize = 11.sp)
+                                    Text("Editar", fontSize = 11.5.sp)
                                 }
 
                                 IconButton(
                                     onClick = { viewModel.toggleBlockUser(user.id, !user.isBlocked) },
-                                    modifier = Modifier.size(36.dp)
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("admin_btn_block_user_${user.id}")
                                 ) {
                                     Icon(
                                         imageVector = if (user.isBlocked) Icons.Default.LockOpen else Icons.Default.Block,
                                         contentDescription = if (user.isBlocked) "Desbloquear" else "Bloquear",
                                         tint = if (user.isBlocked) EmeraldSuccess else RoseError,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
 
                                 IconButton(
                                     onClick = { viewModel.deleteUser(user) },
-                                    modifier = Modifier.size(36.dp)
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("admin_btn_delete_user_${user.id}")
                                 ) {
-                                    Icon(imageVector = Icons.Default.Delete, contentDescription = "Eliminar", tint = RoseError.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+                                    Icon(imageVector = Icons.Default.Delete, contentDescription = "Eliminar", tint = RoseError.copy(alpha = 0.75f), modifier = Modifier.size(20.dp))
                                 }
                             }
                         }
@@ -3580,9 +3601,17 @@ fun SuperuserScreen(
                 }
             },
             onSave = { updatedName, updatedNotes, updatedDays, updatedMaxDevices ->
-                viewModel.updateUserDetails(user.id, updatedName, updatedNotes, updatedDays, updatedMaxDevices)
-                editingUser = null
-                Toast.makeText(context, "Usuario actualizado en Firestore", Toast.LENGTH_SHORT).show()
+                viewModel.updateUserDetails(
+                    userId = user.id,
+                    newName = updatedName,
+                    newNotes = updatedNotes,
+                    remainingDays = updatedDays,
+                    maxDevices = updatedMaxDevices
+                ) { ok, _ ->
+                    if (ok) {
+                        editingUser = null
+                    }
+                }
             }
         )
     }
@@ -3671,6 +3700,7 @@ fun SuperuserScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EditUserDialog(
     user: UserAccount,
@@ -3845,15 +3875,16 @@ fun EditUserDialog(
                             IconButton(
                                 onClick = { if (daysCount > 0) daysCount-- },
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .size(48.dp)
                                     .clip(CircleShape)
                                     .background(RoseError.copy(alpha = 0.15f))
+                                    .testTag("edit_user_minus_1d")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Remove,
                                     contentDescription = "Restar 1 día",
                                     tint = RoseError,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 
@@ -3861,7 +3892,7 @@ fun EditUserDialog(
 
                             Text(
                                 text = "$daysCount días",
-                                color = TextPrimary,
+                                color = if (daysCount > 0) TextPrimary else RoseError,
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -3871,21 +3902,58 @@ fun EditUserDialog(
                             IconButton(
                                 onClick = { daysCount++ },
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .size(48.dp)
                                     .clip(CircleShape)
                                     .background(EmeraldSuccess.copy(alpha = 0.15f))
+                                    .testTag("edit_user_plus_1d")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Add,
                                     contentDescription = "Sumar 1 día",
                                     tint = EmeraldSuccess,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
 
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { daysCount = 0 },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = RoseError),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("edit_user_expire_0d")
+                            ) {
+                                Text("0d (Vencer hoy)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = { daysCount = (daysCount - 5).coerceAtLeast(0) },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = RoseError),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Text("-5d", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = { daysCount += 30 },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldSuccess),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Text("+30d", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
                         Text(
-                            text = "Nueva expiración: ${dateFormat.format(Date(previewExpiry))}",
+                            text = if (daysCount <= 0) "Estado al guardar: EXPIRADO (0 días — acceso bloqueado)" else "Nueva expiración: ${dateFormat.format(Date(previewExpiry))}",
                             color = if (daysCount > 0) EmeraldSuccess else RoseError,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium

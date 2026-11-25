@@ -184,6 +184,9 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
     val pendingAdminPricingUpdate by viewModel.pendingAdminPricingUpdate.collectAsState()
     val pricingSyncBannerNotice by viewModel.pricingSyncBannerNotice.collectAsState()
     val availableAppUpdate by viewModel.availableAppUpdate.collectAsState()
+    val serverAppUpdateInfo by viewModel.serverAppUpdateInfo.collectAsState()
+    val updateLockEvaluation by viewModel.updateLockEvaluation.collectAsState()
+    val apkDownloadUrl by viewModel.apkDownloadUrl.collectAsState()
     val appUpdateCheckFeedback by viewModel.appUpdateCheckFeedback.collectAsState()
     val isAppDistributionSignedIn by viewModel.isAppDistributionTesterSignedIn.collectAsState()
     val visibleHierarchyUsers by viewModel.visibleHierarchyUsers.collectAsState()
@@ -403,22 +406,47 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
     }
 
     val effectiveLockReason = when {
-        licenseEvaluation.isLocked -> licenseEvaluation.reason
         user.isPendingApproval && user.role != "SUPERUSER" -> AccessLockReason.PENDING_SUPERUSER_APPROVAL
-        user.isBlocked -> AccessLockReason.ADMIN_BLOCKED
-        user.isExpired -> AccessLockReason.DAYS_EXPIRED
+        user.isBlocked || licenseEvaluation.reason == AccessLockReason.ADMIN_BLOCKED -> AccessLockReason.ADMIN_BLOCKED
+        licenseEvaluation.reason == AccessLockReason.CLOCK_TAMPER_DETECTED -> AccessLockReason.CLOCK_TAMPER_DETECTED
+        user.isExpired || licenseEvaluation.reason == AccessLockReason.DAYS_EXPIRED -> AccessLockReason.DAYS_EXPIRED
+        updateLockEvaluation.isLocked -> AccessLockReason.UPDATE_REQUIRED
+        licenseEvaluation.isLocked -> licenseEvaluation.reason
         else -> AccessLockReason.NONE
     }
 
-    // Immediate blocking, offline 24h, reboot, clock-tamper & expiration gate
+    val resolvedApkDownloadUrl = serverAppUpdateInfo?.apkDownloadUrl
+        ?.takeIf { it.isNotBlank() }
+        ?: apkDownloadUrl
+
+    // Immediate blocking, offline 24h, reboot, clock-tamper, mandatory update & expiration gate
     if (effectiveLockReason != AccessLockReason.NONE) {
         var showContactDialog by remember { mutableStateOf(false) }
+        val downloadIntent = remember(resolvedApkDownloadUrl) {
+            com.example.util.AppUpdateChecker.buildBrowserDownloadIntent(resolvedApkDownloadUrl)
+        }
         RestrictedAccessScreen(
             user = user,
             lockReason = effectiveLockReason,
             lastOnlineVerifiedAtMs = licenseEvaluation.lastOnlineVerifiedAtMs,
             isNetworkOnline = isNetworkOnline,
             feedbackMessage = lockVerificationFeedback,
+            updateLockReasonText = updateLockEvaluation.reasonText,
+            requiredVersionCode = updateLockEvaluation.requiredVersionCode,
+            apkDownloadUrl = com.example.util.AppUpdateChecker.normalizeDownloadUrl(resolvedApkDownloadUrl),
+            onDownloadUpdateApk = downloadIntent?.let { intent ->
+                {
+                    try {
+                        context.startActivity(intent)
+                    } catch (_: Exception) {
+                        Toast.makeText(
+                            context,
+                            "No se encontró un navegador para abrir el enlace de descarga.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            },
             onRefresh = {
                 viewModel.refreshUserCloudStatus(user.username)
             },

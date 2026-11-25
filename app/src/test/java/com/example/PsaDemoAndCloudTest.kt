@@ -583,7 +583,7 @@ class PsaDemoAndCloudTest {
         val rebootEval = com.example.util.LicenseSecurityGuard.evaluateAccess(
             context = context,
             user = fourDaysOperator,
-            nowDeviceWallMs = baseDeviceWall + 120_000L,
+            nowDeviceWallMs = baseDeviceWall + dayMs + 120_000L,
             nowElapsedMs = 50_000L,
             currentBootCount = baseBootCount + 1
         )

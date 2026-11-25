@@ -598,35 +598,36 @@ class EzoRepository(
         businessPresetDao.deletePreset(preset)
     }
 
-    suspend fun addDaysToUser(userId: String, extraDays: Int) {
-        adjustUserDays(userId, extraDays)
+    suspend fun addDaysToUser(userId: String, extraDays: Int): Result<Unit> {
+        return adjustUserDays(userId, extraDays)
     }
 
-    suspend fun adjustUserDays(userId: String, dayDelta: Int) {
-        val user = userDao.getUserById(userId) ?: return
+    suspend fun adjustUserDays(userId: String, dayDelta: Int): Result<Unit> {
+        val user = userDao.getUserById(userId)
+            ?: return Result.failure(IllegalStateException("No se encontró el usuario en caché local."))
         val deltaMillis = dayDelta.toLong() * 24L * 60L * 60L * 1000L
         val now = System.currentTimeMillis()
 
         val baseMs = if (user.expiresAtMs < now && dayDelta > 0) now else user.expiresAtMs
-        val newExpiry = (baseMs + deltaMillis).coerceAtLeast(now - 1000L)
+        val rawExpiry = baseMs + deltaMillis
         val currentRemainingDays = if (user.expiresAtMs > now) {
-            (user.expiresAtMs - now) / (1000L * 60 * 60 * 24)
+            ((user.expiresAtMs - now + (1000L * 60 * 60 * 24 - 1L)) / (1000L * 60 * 60 * 24))
         } else 0L
-        val newDaysGranted = (currentRemainingDays + dayDelta).coerceAtLeast(0).toInt()
+        val newDaysGranted = (currentRemainingDays + dayDelta).coerceAtLeast(0L).coerceAtMost(3650L).toInt()
+        val newExpiry = if (newDaysGranted <= 0 || rawExpiry <= now) now - 60_000L else rawExpiry
 
         val updatedUser = user.copy(
             expiresAtMs = newExpiry,
             daysGranted = newDaysGranted,
-            isBlocked = if (newExpiry <= now) true else if (dayDelta > 0) false else user.isBlocked
+            isBlocked = if (newDaysGranted <= 0 || newExpiry <= now) true else if (dayDelta > 0) false else user.isBlocked
         )
-        userDao.updateUser(updatedUser)
-        userTokenDao.extendTokenDays(user.token, deltaMillis, dayDelta)
 
         val ctx = context
         val cloudRepo = cloudTeamRepository
         if (updatedUser.email.isNotBlank() && cloudRepo != null) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudRepo.updateUserInCloud(updatedUser)
+            val cloudRes = cloudRepo.updateUserInCloud(updatedUser)
+            if (cloudRes.isFailure) {
+                return cloudRes
             }
         } else if (ctx != null) {
             CoroutineScope(Dispatchers.IO).launch {
@@ -638,23 +639,27 @@ class EzoRepository(
             }
         }
 
+        userDao.updateUser(updatedUser)
+        userTokenDao.extendTokenDays(user.token, deltaMillis, dayDelta)
         if (_currentUser.value?.id == userId) {
             _currentUser.value = updatedUser
         }
+        return Result.success(Unit)
     }
 
-    suspend fun updateUserLocally(updatedUser: UserAccount) {
-        userDao.updateUser(updatedUser)
-        if (updatedUser.email.isNotBlank()) {
-            cloudTeamRepository?.let { repo ->
-                CoroutineScope(Dispatchers.IO).launch {
-                    repo.updateUserInCloud(updatedUser)
-                }
+    suspend fun updateUserLocally(updatedUser: UserAccount): Result<Unit> {
+        val cloudRepo = cloudTeamRepository
+        if (updatedUser.email.isNotBlank() && cloudRepo != null) {
+            val cloudRes = cloudRepo.updateUserInCloud(updatedUser)
+            if (cloudRes.isFailure) {
+                return cloudRes
             }
         }
+        userDao.updateUser(updatedUser)
         if (_currentUser.value?.id == updatedUser.id) {
             _currentUser.value = updatedUser
         }
+        return Result.success(Unit)
     }
 
     suspend fun syncRemoteUserStatusLocally(username: String, isBlocked: Boolean, newExpiresAtMs: Long, newDays: Int) {
@@ -662,7 +667,7 @@ class EzoRepository(
         val updated = user.copy(
             isBlocked = isBlocked,
             expiresAtMs = if (newExpiresAtMs > 0) newExpiresAtMs else user.expiresAtMs,
-            daysGranted = if (newDays > 0) newDays else user.daysGranted
+            daysGranted = newDays.coerceAtLeast(0)
         )
         userDao.updateUser(updated)
         if (_currentUser.value?.id == user.id) {
@@ -676,21 +681,41 @@ class EzoRepository(
         newNotes: String,
         remainingDays: Int,
         maxDevices: Int? = null
-    ) {
-        val user = userDao.getUserById(userId) ?: return
+    ): Result<Unit> {
+        val user = userDao.getUserById(userId)
+            ?: return Result.failure(IllegalStateException("No se encontró el usuario en caché local."))
+        val safeDays = remainingDays.coerceIn(0, 3650)
         val now = System.currentTimeMillis()
-        val durationMillis = remainingDays.toLong() * 24L * 60L * 60L * 1000L
-        val newExpiry = now + durationMillis
+        val durationMillis = safeDays.toLong() * 24L * 60L * 60L * 1000L
+        val newExpiry = if (safeDays <= 0) now - 60_000L else now + durationMillis
         val resolvedMax = (maxDevices ?: user.maxDevices).coerceIn(user.boundDeviceIds.size.coerceAtLeast(1), 5)
 
         val updatedUser = user.copy(
-            username = newName.trim(),
+            username = newName.trim().ifBlank { user.username },
             notes = newNotes.trim(),
             expiresAtMs = newExpiry,
-            daysGranted = remainingDays,
-            isBlocked = if (remainingDays <= 0) true else false,
+            daysGranted = safeDays,
+            isBlocked = safeDays <= 0,
             maxDevices = resolvedMax
         )
+
+        val ctx = context
+        val cloudRepo = cloudTeamRepository
+        if (updatedUser.email.isNotBlank() && cloudRepo != null) {
+            val cloudRes = cloudRepo.updateUserInCloud(updatedUser)
+            if (cloudRes.isFailure) {
+                return cloudRes
+            }
+        } else if (ctx != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    CloudSyncRepository.getInstance(ctx).pushUserUpdateToCloud(updatedUser)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
         userDao.updateUser(updatedUser)
         userTokenDao.deleteByUserId(userId)
         userTokenDao.insertToken(
@@ -701,17 +726,28 @@ class EzoRepository(
                 role = updatedUser.role,
                 validFromMs = updatedUser.validFromMs,
                 expiresAtMs = newExpiry,
-                daysGranted = remainingDays,
+                daysGranted = safeDays,
                 isBlocked = updatedUser.isBlocked,
                 notes = updatedUser.notes
             )
         )
+        if (_currentUser.value?.id == userId) {
+            _currentUser.value = updatedUser
+        }
+        return Result.success(Unit)
+    }
+
+    suspend fun toggleBlockUser(userId: String, shouldBlock: Boolean): Result<Unit> {
+        val existing = userDao.getUserById(userId)
+            ?: return Result.failure(IllegalStateException("No se encontró el usuario en caché local."))
+        val updatedUser = existing.copy(isBlocked = shouldBlock)
 
         val ctx = context
         val cloudRepo = cloudTeamRepository
         if (updatedUser.email.isNotBlank() && cloudRepo != null) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudRepo.updateUserInCloud(updatedUser)
+            val cloudRes = cloudRepo.updateUserInCloud(updatedUser)
+            if (cloudRes.isFailure) {
+                return cloudRes
             }
         } else if (ctx != null) {
             CoroutineScope(Dispatchers.IO).launch {
@@ -723,33 +759,12 @@ class EzoRepository(
             }
         }
 
-        if (_currentUser.value?.id == userId) {
-            _currentUser.value = updatedUser
-        }
-    }
-
-    suspend fun toggleBlockUser(userId: String, shouldBlock: Boolean) {
         userDao.setUserBlocked(userId, shouldBlock)
         userTokenDao.setTokenBlockedByUserId(userId, shouldBlock)
-        val updatedUser = userDao.getUserById(userId)
-        val ctx = context
-        val cloudRepo = cloudTeamRepository
-        if (updatedUser != null && updatedUser.email.isNotBlank() && cloudRepo != null) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudRepo.updateUserInCloud(updatedUser)
-            }
-        } else if (updatedUser != null && ctx != null) {
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    CloudSyncRepository.getInstance(ctx).pushUserUpdateToCloud(updatedUser)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
         if (_currentUser.value?.id == userId) {
             _currentUser.value = updatedUser
         }
+        return Result.success(Unit)
     }
 
     suspend fun setUserUpdateLock(
@@ -758,30 +773,37 @@ class EzoRepository(
         requiredVersionCode: Int,
         reason: String,
         syncToCloud: Boolean = true
-    ) {
+    ): Result<Unit> {
+        val existing = userDao.getUserById(userId)
+            ?: return Result.failure(IllegalStateException("No se encontró el usuario en caché local."))
         val cleanReason = reason.trim().take(300)
         val safeRequiredCode = requiredVersionCode.coerceIn(0, 100000)
-        userDao.setUserUpdateLock(userId, updateRequired, safeRequiredCode, cleanReason)
-        val updatedUser = userDao.getUserById(userId)
+        val updatedUser = existing.copy(
+            updateRequired = updateRequired,
+            requiredVersionCode = safeRequiredCode,
+            updateLockReason = cleanReason
+        )
         val cloudRepo = cloudTeamRepository
-        if (syncToCloud && updatedUser != null && updatedUser.email.isNotBlank() && cloudRepo != null) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudRepo.updateUserInCloud(updatedUser)
+        if (syncToCloud && updatedUser.email.isNotBlank() && cloudRepo != null) {
+            val cloudRes = cloudRepo.updateUserInCloud(updatedUser)
+            if (cloudRes.isFailure) {
+                return cloudRes
             }
         }
-        if (_currentUser.value?.id == userId && updatedUser != null) {
+        userDao.setUserUpdateLock(userId, updateRequired, safeRequiredCode, cleanReason)
+        if (_currentUser.value?.id == userId) {
             _currentUser.value = updatedUser
         }
+        return Result.success(Unit)
     }
 
-    suspend fun deleteUser(user: UserAccount) {
-        userDao.deleteUser(user)
-        userTokenDao.deleteByUserId(user.id)
+    suspend fun deleteUser(user: UserAccount): Result<Unit> {
         val ctx = context
         val cloudRepo = cloudTeamRepository
         if (user.email.isNotBlank() && cloudRepo != null) {
-            CoroutineScope(Dispatchers.IO).launch {
-                cloudRepo.deleteUserFromCloud(user.email)
+            val cloudRes = cloudRepo.deleteUserFromCloud(user.email)
+            if (cloudRes.isFailure) {
+                return cloudRes
             }
         } else if (ctx != null) {
             CoroutineScope(Dispatchers.IO).launch {
@@ -792,9 +814,12 @@ class EzoRepository(
                 }
             }
         }
+        userDao.deleteUser(user)
+        userTokenDao.deleteByUserId(user.id)
         if (_currentUser.value?.id == user.id) {
             _currentUser.value = null
         }
+        return Result.success(Unit)
     }
 
     suspend fun syncAllUsersFromCloud() {

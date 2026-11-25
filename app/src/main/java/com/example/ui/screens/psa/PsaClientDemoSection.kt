@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Kitchen
 import androidx.compose.material.icons.filled.LocalCafe
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.ChildCare
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Shower
@@ -98,8 +99,10 @@ import com.example.util.DemoContainerOption
 import com.example.util.DemoWaterSource
 import com.example.util.PsaCountryConfig
 import com.example.util.PsaCountryRegistry
+import com.example.util.PsaDemoAiContext
 import com.example.util.PsaDemoDiagnosticSummary
 import com.example.util.PsaDemoReportExporter
+import com.example.util.PsaHardnessStripCatalog
 import java.util.Locale
 import kotlin.math.abs
 
@@ -186,6 +189,8 @@ fun PsaClientDemoSection(
     activeVisit: PsaHomeVisit? = null,
     onClearActiveVisit: (() -> Unit)? = null,
     onSaveDiagnosticToVisit: ((visit: PsaHomeVisit, waterSource: String, chlorinePpm: Float, hardnessPpm: Int, realLitersPerDay: Double, cartSummary: String, testPhotoPath: String) -> Unit)? = null,
+    onOpenAiAssistant: (() -> Unit)? = null,
+    onAiContextChanged: ((PsaDemoAiContext) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val isLargeFont = LocalIsLargeFontMode.current
@@ -315,6 +320,40 @@ fun PsaClientDemoSection(
     }
     val selectedTapComparisonModel = comparisonModels.firstOrNull { it.id == selectedComparisonModelId } ?: comparisonModels.first()
 
+    LaunchedEffect(
+        waterSource,
+        chlorinePpm,
+        selectedWellStripIdx,
+        tapConsumptionStats,
+        tapCartQuantities,
+        wellCartQuantities,
+        clientExportLabel,
+        allPurifiers
+    ) {
+        val hardnessStages = PsaHardnessStripCatalog.stages
+        val activeHardness = hardnessStages[selectedWellStripIdx.coerceIn(0, hardnessStages.lastIndex)].ppmNumeric
+        val activeCart = if (waterSource == DemoWaterSource.AGUA_DE_POZO) wellCartQuantities else tapCartQuantities
+        val cartIds = activeCart.filterValues { it > 0 }.keys.toList()
+        val cartText = cartIds.mapNotNull { id ->
+            val model = allPurifiers.firstOrNull { it.id == id } ?: return@mapNotNull null
+            val qty = activeCart[id] ?: 1
+            if (qty > 1) "${qty}x ${model.name}" else model.name
+        }.joinToString(" + ")
+        onAiContextChanged?.invoke(
+            PsaDemoAiContext(
+                sourceOrigin = "Demostración",
+                waterSource = waterSource.name,
+                chlorinePpm = chlorinePpm,
+                hardnessPpm = activeHardness,
+                realLitersPerDay = tapConsumptionStats.totalRealLitersDay,
+                annualBottledSpend = tapConsumptionStats.annualBottledSpend,
+                cartModelIds = cartIds,
+                cartSummary = cartText,
+                clientName = clientExportLabel.trim()
+            )
+        )
+    }
+
     val wellBlocks = if (waterSource == DemoWaterSource.AGUA_DE_POZO) {
         WellWaterDemoModules(
             selectedModule = selectedWellModule,
@@ -408,29 +447,45 @@ fun PsaClientDemoSection(
                     if (isLargeFont && !isFullscreenPresentation) {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             DemoHeaderText(isFullscreenPresentation, waterSource)
-                            DemoHeaderActionButton(
-                                isFullscreenPresentation = isFullscreenPresentation,
-                                onOpenFullscreen = onOpenFullscreen,
-                                onCloseFullscreen = onCloseFullscreen,
-                                fullWidth = true
-                            )
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (onOpenAiAssistant != null) {
+                                    DemoAiQuickButton(onClick = onOpenAiAssistant, fullWidth = true)
+                                }
+                                DemoHeaderActionButton(
+                                    isFullscreenPresentation = isFullscreenPresentation,
+                                    onOpenFullscreen = onOpenFullscreen,
+                                    onCloseFullscreen = onCloseFullscreen,
+                                    fullWidth = true
+                                )
+                            }
                         }
                     } else {
-                        Row(
+                        FlowRow(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Box(modifier = Modifier.weight(1f)) {
+                            Box(modifier = Modifier.padding(top = 6.dp)) {
                                 DemoHeaderText(isFullscreenPresentation, waterSource)
                             }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            DemoHeaderActionButton(
-                                isFullscreenPresentation = isFullscreenPresentation,
-                                onOpenFullscreen = onOpenFullscreen,
-                                onCloseFullscreen = onCloseFullscreen,
-                                fullWidth = false
-                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (!isFullscreenPresentation && onOpenAiAssistant != null) {
+                                    DemoAiQuickButton(onClick = onOpenAiAssistant, fullWidth = false)
+                                }
+                                DemoHeaderActionButton(
+                                    isFullscreenPresentation = isFullscreenPresentation,
+                                    onOpenFullscreen = onOpenFullscreen,
+                                    onCloseFullscreen = onCloseFullscreen,
+                                    fullWidth = false
+                                )
+                            }
                         }
                     }
 
@@ -1474,6 +1529,27 @@ private fun DemoHeaderActionButton(
             Spacer(modifier = Modifier.width(6.dp))
             Text("Modo Presentación", color = Color.Black, fontWeight = FontWeight.Bold)
         }
+    }
+}
+
+@Composable
+private fun DemoAiQuickButton(
+    onClick: () -> Unit,
+    fullWidth: Boolean
+) {
+    OutlinedButton(
+        onClick = onClick,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, PsaCyanGlow.copy(alpha = 0.7f)),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+        modifier = Modifier
+            .then(if (fullWidth) Modifier.fillMaxWidth() else Modifier)
+            .heightIn(min = 48.dp)
+            .testTag("demo_open_psa_ai_btn")
+    ) {
+        Icon(Icons.Default.Psychology, contentDescription = "Asistente IA PSA", tint = PsaCyanGlow, modifier = Modifier.size(18.dp))
+        Spacer(modifier = Modifier.width(6.dp))
+        Text("IA PSA", color = PsaCyanGlow, fontWeight = FontWeight.Bold)
     }
 }
 

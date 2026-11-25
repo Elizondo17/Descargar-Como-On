@@ -57,6 +57,11 @@ import com.example.util.FirebaseAppDistributionHelper
 import com.example.util.FirebaseAppDistributionOutcome
 import com.example.util.LicenseEvaluationResult
 import com.example.util.LicenseSecurityGuard
+import com.example.util.PsaAiAudience
+import com.example.util.PsaAiChatEntry
+import com.example.util.PsaDemoAiContext
+import com.example.util.PsaInternalKnowledgeEngine
+import com.example.util.PsaKeyQuestion
 import com.example.util.PsaCountryPricingSnapshot
 import com.example.util.PsaPricingCloudSyncHelper
 import com.example.util.PsaScheduleManager
@@ -65,6 +70,7 @@ import com.example.data.repository.CloudAuthOutcome
 import com.example.data.repository.CloudSyncRepository
 import com.example.service.GeminiSalesService
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -73,6 +79,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
@@ -191,6 +198,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isHierarchyActionBusy = MutableStateFlow(false)
     val isHierarchyActionBusy: StateFlow<Boolean> = _isHierarchyActionBusy.asStateFlow()
+
+    private val _adminUserActionFeedback = MutableStateFlow<String?>(null)
+    val adminUserActionFeedback: StateFlow<String?> = _adminUserActionFeedback.asStateFlow()
+
+    private val _psaAiAudience = MutableStateFlow(PsaAiAudience.VENDEDOR)
+    val psaAiAudience: StateFlow<PsaAiAudience> = _psaAiAudience.asStateFlow()
+
+    private val _psaAiDemoContext = MutableStateFlow(PsaDemoAiContext())
+    val psaAiDemoContext: StateFlow<PsaDemoAiContext> = _psaAiDemoContext.asStateFlow()
+
+    private val _psaAiConversation = MutableStateFlow<List<PsaAiChatEntry>>(emptyList())
+    val psaAiConversation: StateFlow<List<PsaAiChatEntry>> = _psaAiConversation.asStateFlow()
 
     private var userListenerJob: Job? = null
     private var allUsersListenerJob: Job? = null
@@ -729,6 +748,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _roleVisibilityConfig.value = remoteMatrix
             }
         )
+        // Periodic foreground monitor so staying open continuously >24h offline locks automatically
+        viewModelScope.launch {
+            while (isActive) {
+                delay(60_000L)
+                val activeUser = currentUser.value
+                if (activeUser != null) {
+                    val online = LicenseSecurityGuard.hasInternetConnectivity(getApplication())
+                    _isNetworkOnline.value = online
+                    val eval = evaluateLicenseNow(activeUser)
+                    if (eval.reason == AccessLockReason.OFFLINE_OVER_24H) {
+                        shutdownBackgroundServicesOnLock()
+                    }
+                }
+            }
+        }
     }
 
     override fun onCleared() {
@@ -1165,7 +1199,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 
     fun recheckCloudAccessNow(silentIfNotLocked: Boolean = false) {
-        val cloudRepo = repository.cloudTeamRepository ?: return
+        viewModelScope.launch {
+            recheckCloudAccessInternal(silentIfNotLocked = silentIfNotLocked)
+        }
+    }
+
+    private suspend fun recheckCloudAccessInternal(silentIfNotLocked: Boolean = false) {
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            if (!silentIfNotLocked) {
+                _lockVerificationFeedback.value = "Firebase no está configurado en este APK para validar en la nube."
+            }
+            return
+        }
         val firebaseUser = cloudRepo.getCurrentFirebaseUser()
         _isCloudGoogleConnected.value = firebaseUser != null
         val online = LicenseSecurityGuard.hasInternetConnectivity(getApplication())
@@ -1177,25 +1223,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        if (firebaseUser == null) return
-        viewModelScope.launch {
+        if (firebaseUser == null) {
             if (!silentIfNotLocked) {
-                _lockVerificationFeedback.value = null
-                _googleAuthUiState.value = GoogleAuthUiState.Loading("Verificando tu acceso...")
+                _lockVerificationFeedback.value = "Tu sesión de Google no está vinculada en la nube. Toca 'Cambiar / Salir' e inicia sesión con Google."
             }
-            val pendingTamper = LicenseSecurityGuard.getPendingTamperReportMs(getApplication())
-            val outcome = cloudRepo.verifyAndClaimAccess(
-                emailRaw = firebaseUser.email.orEmpty(),
-                firebaseUid = firebaseUser.uid,
-                displayName = firebaseUser.displayName.orEmpty(),
-                pendingTamperAlertMs = pendingTamper
-            )
-            val refreshedServerVersion = cloudRepo.fetchAppVersionFromServer()
-            if (refreshedServerVersion != null) {
-                _serverAppUpdateInfo.value = refreshedServerVersion
-            }
-            applyCloudAuthOutcome(outcome, silentError = silentIfNotLocked)
+            return
         }
+        if (!silentIfNotLocked) {
+            _lockVerificationFeedback.value = null
+            _googleAuthUiState.value = GoogleAuthUiState.Loading("Verificando tu acceso...")
+        }
+        val pendingTamper = LicenseSecurityGuard.getPendingTamperReportMs(getApplication())
+        val outcome = cloudRepo.verifyAndClaimAccess(
+            emailRaw = firebaseUser.email.orEmpty(),
+            firebaseUid = firebaseUser.uid,
+            displayName = firebaseUser.displayName.orEmpty(),
+            pendingTamperAlertMs = pendingTamper
+        )
+        val refreshedServerVersion = cloudRepo.fetchAppVersionFromServer()
+        if (refreshedServerVersion != null) {
+            _serverAppUpdateInfo.value = refreshedServerVersion
+        }
+        applyCloudAuthOutcome(outcome, silentError = silentIfNotLocked)
     }
 
     private suspend fun applyCloudAuthOutcome(
@@ -1478,7 +1527,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshAppErrorsFromCloud() {
-        val cloudRepo = repository.cloudTeamRepository ?: return
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            _appErrorsFeedback.value = "Firebase no está inicializado en este APK."
+            return
+        }
         viewModelScope.launch {
             _isLoadingAppErrors.value = true
             try {
@@ -1498,28 +1551,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resolveAppError(errorId: String, resolved: Boolean) {
-        val cloudRepo = repository.cloudTeamRepository ?: return
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            _appErrorsFeedback.value = "Firebase no está inicializado en este APK."
+            return
+        }
         viewModelScope.launch {
             val status = if (resolved) "RESOLVED" else "OPEN"
             cloudRepo.markAppErrorStatus(errorId, status)
                 .onSuccess {
+                    _appErrors.value = _appErrors.value.map { item ->
+                        if (item.id == errorId) item.copy(status = status) else item
+                    }
                     _appErrorsFeedback.value = if (resolved) "✅ Error marcado como resuelto." else "🔄 Error reabierto."
                 }
                 .onFailure { err ->
-                    _appErrorsFeedback.value = err.message ?: "No se pudo actualizar el estado."
+                    _appErrorsFeedback.value = err.message ?: "No se pudo actualizar el estado en Firebase."
                 }
         }
     }
 
     fun deleteAppError(errorId: String) {
-        val cloudRepo = repository.cloudTeamRepository ?: return
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            _appErrorsFeedback.value = "Firebase no está inicializado en este APK."
+            return
+        }
         viewModelScope.launch {
             cloudRepo.deleteAppError(errorId)
                 .onSuccess {
+                    _appErrors.value = _appErrors.value.filterNot { it.id == errorId }
                     _appErrorsFeedback.value = "🗑️ Registro eliminado de AppErrors."
                 }
                 .onFailure { err ->
-                    _appErrorsFeedback.value = err.message ?: "No se pudo eliminar el registro."
+                    _appErrorsFeedback.value = err.message ?: "No se pudo eliminar el registro en Firebase."
                 }
         }
     }
@@ -2051,15 +2116,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun addDaysToUser(userId: String, extraDays: Int) {
-        viewModelScope.launch {
-            repository.addDaysToUser(userId, extraDays)
-        }
+    fun clearAdminUserActionFeedback() {
+        _adminUserActionFeedback.value = null
     }
 
-    fun adjustUserDays(userId: String, dayDelta: Int) {
+    fun addDaysToUser(userId: String, extraDays: Int) {
+        adjustUserDays(userId, extraDays)
+    }
+
+    fun adjustUserDays(
+        userId: String,
+        dayDelta: Int,
+        onComplete: ((Boolean, String) -> Unit)? = null
+    ) {
         viewModelScope.launch {
-            repository.adjustUserDays(userId, dayDelta)
+            val res = repository.adjustUserDays(userId, dayDelta)
+            val msg = res.fold(
+                onSuccess = {
+                    if (dayDelta >= 0) "✅ +${dayDelta} días aplicados correctamente."
+                    else "✅ Ajuste de ${dayDelta} días aplicado correctamente."
+                },
+                onFailure = { err ->
+                    err.message ?: "No se pudieron ajustar los días en Firestore."
+                }
+            )
+            _adminUserActionFeedback.value = msg
+            onComplete?.invoke(res.isSuccess, msg)
         }
     }
 
@@ -2068,22 +2150,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         newName: String,
         newNotes: String,
         remainingDays: Int,
-        maxDevices: Int? = null
+        maxDevices: Int? = null,
+        onComplete: ((Boolean, String) -> Unit)? = null
     ) {
         viewModelScope.launch {
-            repository.updateUserDetails(userId, newName, newNotes, remainingDays, maxDevices)
+            val res = repository.updateUserDetails(userId, newName, newNotes, remainingDays, maxDevices)
+            val msg = res.fold(
+                onSuccess = {
+                    if (remainingDays <= 0) "⛔ Usuario expirado (0 días) y guardado en Firestore."
+                    else "✅ Usuario actualizado en Firestore ($remainingDays días)."
+                },
+                onFailure = { err ->
+                    err.message ?: "No se pudo actualizar el usuario en Firestore."
+                }
+            )
+            _adminUserActionFeedback.value = msg
+            onComplete?.invoke(res.isSuccess, msg)
         }
     }
 
-    fun toggleBlockUser(userId: String, shouldBlock: Boolean) {
+    fun toggleBlockUser(
+        userId: String,
+        shouldBlock: Boolean,
+        onComplete: ((Boolean, String) -> Unit)? = null
+    ) {
         viewModelScope.launch {
-            repository.toggleBlockUser(userId, shouldBlock)
+            val res = repository.toggleBlockUser(userId, shouldBlock)
+            val msg = res.fold(
+                onSuccess = {
+                    if (shouldBlock) "⛔ Usuario bloqueado en tiempo real."
+                    else "✅ Usuario desbloqueado correctamente."
+                },
+                onFailure = { err ->
+                    err.message ?: "No se pudo cambiar el bloqueo en Firestore."
+                }
+            )
+            _adminUserActionFeedback.value = msg
+            onComplete?.invoke(res.isSuccess, msg)
         }
     }
 
-    fun deleteUser(user: UserAccount) {
+    fun deleteUser(
+        user: UserAccount,
+        onComplete: ((Boolean, String) -> Unit)? = null
+    ) {
         viewModelScope.launch {
-            repository.deleteUser(user)
+            val res = repository.deleteUser(user)
+            val msg = res.fold(
+                onSuccess = { "🗑️ Operador ${user.username} eliminado." },
+                onFailure = { err -> err.message ?: "No se pudo eliminar el operador en Firestore." }
+            )
+            _adminUserActionFeedback.value = msg
+            onComplete?.invoke(res.isSuccess, msg)
         }
     }
 
@@ -3006,9 +3124,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshUserCloudStatus(username: String, onComplete: ((Boolean) -> Unit)? = null) {
         val cloudRepo = repository.cloudTeamRepository
-        if (cloudRepo?.getCurrentFirebaseUser() != null) {
-            recheckCloudAccessNow()
-            onComplete?.invoke(currentUser.value?.isBlocked == true)
+        if (cloudRepo != null) {
+            viewModelScope.launch {
+                recheckCloudAccessInternal(silentIfNotLocked = false)
+                onComplete?.invoke(currentUser.value?.isBlocked == true)
+            }
             return
         }
         viewModelScope.launch {
@@ -3018,6 +3138,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     repository.syncRemoteUserStatusLocally(username, isBlocked, newExpiresAtMs, newDays)
                     onComplete?.invoke(isBlocked)
                 }
+            )
+        }
+    }
+
+    // --- PSA INTERNAL PRODUCT AI & KEY QUESTIONS ---
+
+    fun setPsaAiAudience(audience: PsaAiAudience) {
+        _psaAiAudience.value = audience
+    }
+
+    fun updatePsaAiDemoContext(contextSnapshot: PsaDemoAiContext) {
+        _psaAiDemoContext.value = contextSnapshot
+    }
+
+    fun askInternalPsaKeyQuestion(keyQuestion: PsaKeyQuestion) {
+        val answer = PsaInternalKnowledgeEngine.answerKeyQuestion(
+            keyQuestion = keyQuestion,
+            audience = _psaAiAudience.value,
+            pricingConfig = _psaPricingConfig.value,
+            financingConfig = _psaFinancingConfig.value,
+            country = _activePsaCountry.value,
+            demoContext = _psaAiDemoContext.value,
+            savedKnowledge = allSalesKnowledge.value
+        )
+        val entry = PsaAiChatEntry(
+            id = "psa_ai_${System.currentTimeMillis()}",
+            question = keyQuestion.fullQuestion,
+            audience = _psaAiAudience.value,
+            answer = answer
+        )
+        _psaAiConversation.value = listOf(entry) + _psaAiConversation.value.take(19)
+    }
+
+    fun askInternalPsaQuestion(question: String) {
+        val trimmed = question.trim()
+        if (trimmed.isBlank()) return
+        val answer = PsaInternalKnowledgeEngine.answerQuestion(
+            rawQuestion = trimmed,
+            displayQuestion = trimmed,
+            audience = _psaAiAudience.value,
+            pricingConfig = _psaPricingConfig.value,
+            financingConfig = _psaFinancingConfig.value,
+            country = _activePsaCountry.value,
+            demoContext = _psaAiDemoContext.value,
+            savedKnowledge = allSalesKnowledge.value
+        )
+        val entry = PsaAiChatEntry(
+            id = "psa_ai_${System.currentTimeMillis()}",
+            question = trimmed,
+            audience = _psaAiAudience.value,
+            answer = answer
+        )
+        _psaAiConversation.value = listOf(entry) + _psaAiConversation.value.take(19)
+    }
+
+    fun clearPsaAiConversation() {
+        _psaAiConversation.value = emptyList()
+    }
+
+    fun savePsaAiEntryToMemory(entry: PsaAiChatEntry) {
+        viewModelScope.launch {
+            val content = buildString {
+                append("${entry.answer.headline} (${entry.answer.recommendedModelName})\n")
+                append("${entry.answer.priceAndInstallmentText}\n")
+                append("• ${entry.answer.demoOrClientTip}\n")
+                append("• ${entry.answer.objectionOrNextStep}")
+            }
+            repository.addWinningSalesKnowledge(
+                content = content,
+                category = "PSA_IA_INTERNA",
+                isQuestion = true,
+                triggerContext = entry.question.take(80)
             )
         }
     }

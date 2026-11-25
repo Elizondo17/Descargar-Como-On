@@ -749,7 +749,6 @@ private fun ActiveLicensesExpirationSection(
                     isLargeFont = isLargeFont,
                     onAddDays = { days ->
                         viewModel.adjustUserDays(user.id, days)
-                        Toast.makeText(context, "+$days días aplicados a ${user.username}", Toast.LENGTH_SHORT).show()
                     },
                     onToggleBlock = {
                         viewModel.toggleBlockUser(user.id, !user.isBlocked)
@@ -900,14 +899,7 @@ private fun LicenseExpirationCard(
                 Text("Editar", fontSize = 11.5.sp)
             }
             OutlinedButton(
-                onClick = {
-                    onToggleBlock()
-                    Toast.makeText(
-                        context,
-                        if (user.isBlocked) "Licencia reactivada" else "Licencia bloqueada",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                },
+                onClick = onToggleBlock,
                 shape = RoundedCornerShape(8.dp),
                 border = BorderStroke(1.dp, if (user.isBlocked) EmeraldSuccess else RoseError),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),

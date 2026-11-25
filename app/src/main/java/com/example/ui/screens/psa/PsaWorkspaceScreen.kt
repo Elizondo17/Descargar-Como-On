@@ -77,6 +77,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -89,6 +90,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -230,6 +232,7 @@ fun PsaWorkspaceScreen(
     var showOfficialWebBrowser by remember { mutableStateOf(false) }
     var showSmartPriceImportDialog by remember { mutableStateOf(false) }
     var showCountryPicker by remember { mutableStateOf(false) }
+    var showQuickPsaAiSheet by remember { mutableStateOf(false) }
     var selectedVisitForDemo by remember { mutableStateOf<PsaHomeVisit?>(null) }
     var selectedPurifierForWorkspace by remember(pricingConfig) {
         mutableStateOf(pricingConfig.getAllPurifiers().first())
@@ -458,7 +461,9 @@ fun PsaWorkspaceScreen(
                                     visitId = selectedVisitForDemo?.id ?: ""
                                 )
                             },
-                            onOpenPricingSettings = { showPricingDialog = true }
+                            onOpenPricingSettings = { showPricingDialog = true },
+                            onOpenAiAssistant = { showQuickPsaAiSheet = true },
+                            onAiContextChanged = { snapshot -> viewModel.updatePsaAiDemoContext(snapshot) }
                         )
 
                         PsaWorkspaceTab.STOCK -> PsaStockTabContent(
@@ -506,7 +511,9 @@ fun PsaWorkspaceScreen(
                                     cartSummary = cartText,
                                     testPhotoPath = photoPath
                                 )
-                            }
+                            },
+                            onOpenAiAssistant = { showQuickPsaAiSheet = true },
+                            onAiContextChanged = { snapshot -> viewModel.updatePsaAiDemoContext(snapshot) }
                         )
 
                         PsaWorkspaceTab.AI_MEMORY -> PsaAiMemoryTabContent(
@@ -693,6 +700,21 @@ fun PsaWorkspaceScreen(
             },
             onDismiss = { showSmartPriceImportDialog = false }
         )
+    }
+
+    // Acceso rápido al Asistente Interno PSA desde Demostración o Cotizar
+    if (showQuickPsaAiSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showQuickPsaAiSheet = false },
+            sheetState = sheetState,
+            containerColor = SlateBackground
+        ) {
+            PsaInternalAiPanel(
+                viewModel = viewModel,
+                compactSheetMode = true
+            )
+        }
     }
 }
 
@@ -2602,7 +2624,7 @@ private fun PsaScriptsTabContent(
 // El contenido visual de Demostración para clientes vive ahora en PsaClientDemoSection.kt (sin mensajes ni botones de vendedor).
 
 // -------------------------------------------------------------
-// TAB 4: MEMORIA DE IA ESPECIALIZADA EN PSA
+// TAB 4: ASISTENTE INTERNO Y MEMORIA IA ESPECIALIZADA EN PSA
 // -------------------------------------------------------------
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -2614,6 +2636,7 @@ private fun PsaAiMemoryTabContent(
     val psaKnowledge = remember(allKnowledge) {
         allKnowledge.filter { it.category.startsWith("PSA_") }
     }
+    var showSavedPatterns by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -2622,132 +2645,193 @@ private fun PsaAiMemoryTabContent(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF032238)),
-                border = BorderStroke(1.dp, PsaCyanPrimary),
-                shape = RoundedCornerShape(12.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SlateCard)
+                    .border(1.dp, SlateCardBorder, RoundedCornerShape(12.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (!showSavedPatterns) PsaCyanPrimary else Color.Transparent)
+                        .clickable { showSavedPatterns = false }
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                        .testTag("psa_ai_subtab_assistant"),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.Psychology, contentDescription = null, tint = PsaCyanGlow, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Respuestas PSA probadas (califica ⭐ las ganadoras)",
-                        color = PsaCyanGlow,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
+                        text = "🤖 Asistente PSA",
+                        color = if (!showSavedPatterns) Color.Black else TextSecondary,
+                        fontWeight = if (!showSavedPatterns) FontWeight.Bold else FontWeight.Medium,
+                        fontSize = 12.sp,
+                        maxLines = 1
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (showSavedPatterns) PurpleNeon else Color.Transparent)
+                        .clickable { showSavedPatterns = true }
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                        .testTag("psa_ai_subtab_memory"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "⭐ Patrones (${psaKnowledge.size})",
+                        color = if (showSavedPatterns) Color.White else TextSecondary,
+                        fontWeight = if (showSavedPatterns) FontWeight.Bold else FontWeight.Medium,
+                        fontSize = 12.sp,
+                        maxLines = 1
                     )
                 }
             }
         }
 
-        if (psaKnowledge.isEmpty()) {
+        if (!showSavedPatterns) {
             item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(20.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(text = "Cargando patrones de venta PSA...", color = TextMuted, fontSize = 12.sp)
-                }
+                PsaInternalAiPanel(
+                    viewModel = viewModel,
+                    compactSheetMode = false
+                )
             }
         } else {
-            items(psaKnowledge) { item ->
+            item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = SlateCard),
-                    border = BorderStroke(1.dp, SlateCardBorder),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF032238)),
+                    border = BorderStroke(1.dp, PsaCyanPrimary),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "⚡ ${item.triggerContext}",
-                                color = TextPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(PsaCyanPrimary.copy(alpha = 0.2f))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Psychology, contentDescription = null, tint = PsaCyanGlow, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Respuestas PSA probadas (califica ⭐ las ganadoras)",
+                            color = PsaCyanGlow,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            }
+
+            if (psaKnowledge.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(text = "Aún no guardaste respuestas en Memoria IA.", color = TextMuted, fontSize = 12.sp)
+                    }
+                }
+            } else {
+                items(psaKnowledge) { item ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = SlateCard),
+                        border = BorderStroke(1.dp, SlateCardBorder),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = "★ ${item.successScore} pts",
-                                    color = PsaCyanGlow,
+                                    text = "⚡ ${item.triggerContext}",
+                                    color = TextPrimary,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 10.sp
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(PsaCyanPrimary.copy(alpha = 0.2f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "★ ${item.successScore} pts",
+                                        color = PsaCyanGlow,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                                    .padding(8.dp)
+                            ) {
+                                Text(
+                                    text = item.winningContent,
+                                    color = TextPrimary,
+                                    fontSize = 11.sp,
+                                    lineHeight = 16.sp
                                 )
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
-                                .padding(8.dp)
-                        ) {
-                            Text(
-                                text = item.winningContent,
-                                color = TextPrimary,
-                                fontSize = 11.sp,
-                                lineHeight = 16.sp
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "Usado ${item.usageCount} veces",
-                                color = TextMuted,
-                                fontSize = 11.sp
-                            )
+                            Spacer(modifier = Modifier.height(10.dp))
 
                             FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                OutlinedButton(
-                                    onClick = {
-                                        copyToClipboard(context, item.winningContent)
-                                    },
-                                    shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                    modifier = Modifier.heightIn(min = 44.dp)
-                                ) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = null, tint = PsaCyanGlow, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Copiar", fontSize = 11.sp, color = PsaCyanGlow)
-                                }
+                                Text(
+                                    text = "Usado ${item.usageCount} veces",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
 
-                                Button(
-                                    onClick = {
-                                        viewModel.rateSalesKnowledge(item.id, 1)
-                                        Toast.makeText(context, "⭐ ¡Efectividad incrementada (+1)!", Toast.LENGTH_SHORT).show()
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
-                                    shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                    modifier = Modifier.heightIn(min = 44.dp)
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(Icons.Default.Star, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Ganadora (+1)", fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                    OutlinedButton(
+                                        onClick = {
+                                            copyToClipboard(context, item.winningContent)
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.heightIn(min = 48.dp)
+                                    ) {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = null, tint = PsaCyanGlow, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Copiar", fontSize = 11.sp, color = PsaCyanGlow)
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            viewModel.rateSalesKnowledge(item.id, 1)
+                                            Toast.makeText(context, "⭐ ¡Efectividad incrementada (+1)!", Toast.LENGTH_SHORT).show()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.heightIn(min = 48.dp)
+                                    ) {
+                                        Icon(Icons.Default.Star, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Ganadora (+1)", fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                    }
                                 }
                             }
                         }

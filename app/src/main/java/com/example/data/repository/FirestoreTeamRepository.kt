@@ -583,19 +583,41 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun updateUserInCloud(user: UserAccount): Result<Unit> {
+        val currentFbUser = auth.currentUser
+            ?: return Result.failure(
+                IllegalStateException("Conecta tu cuenta Google de Superusuario arriba para guardar cambios en Firestore.")
+            )
         val emailKey = normalizeEmail(user.email)
         if (emailKey.isBlank()) return Result.failure(IllegalArgumentException("Usuario sin correo configurado."))
         val safeMaxDevices = user.maxDevices.coerceIn(user.boundDeviceIds.size.coerceAtLeast(1), 5)
         val sanitized = user.copy(maxDevices = safeMaxDevices)
+        val docRef = firestore.collection(COLLECTION_USERS).document(emailKey)
         return try {
-            firestore.collection(COLLECTION_USERS)
-                .document(emailKey)
-                .update(userToUpdateMap(sanitized))
-                .await()
+            docRef.update(userToUpdateMap(sanitized)).await()
             Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
+        } catch (e: FirebaseFirestoreException) {
+            if (e.code == FirebaseFirestoreException.Code.NOT_FOUND) {
+                return try {
+                    docRef.set(userToCreateMap(sanitized)).await()
+                    Result.success(Unit)
+                } catch (ce2: CancellationException) {
+                    throw ce2
+                } catch (e2: Exception) {
+                    handleFirestoreError("updateUserInCloud(set)", e2)
+                    Result.failure(Exception("No se pudo crear el usuario en Firestore: ${e2.localizedMessage}"))
+                }
+            }
+            handleFirestoreError("updateUserInCloud", e)
+            val msg = if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                "Permiso denegado en Firestore para ${currentFbUser.email ?: "tu cuenta"}. Reconecta el Google de Superusuario."
+            } else {
+                "Error actualizando en Firestore: ${e.localizedMessage ?: e.code.name}"
+            }
+            Result.failure(Exception(msg))
         } catch (e: Exception) {
+            handleFirestoreError("updateUserInCloud", e)
             Result.failure(Exception("Error actualizando en Firestore: ${e.localizedMessage}"))
         }
     }
@@ -626,6 +648,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deleteUserFromCloud(emailRaw: String): Result<Unit> {
+        val currentFbUser = auth.currentUser
+            ?: return Result.failure(
+                IllegalStateException("Conecta tu cuenta Google de Superusuario arriba para eliminar en Firestore.")
+            )
         val emailKey = normalizeEmail(emailRaw)
         if (emailKey.isBlank() || emailKey == BOOTSTRAP_ADMIN_EMAIL) {
             return Result.failure(IllegalArgumentException("No se puede eliminar este perfil."))
@@ -635,7 +661,16 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("deleteUserFromCloud", e)
+            val msg = if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                "Permiso denegado para ${currentFbUser.email ?: "tu cuenta"} al eliminar en Firestore."
+            } else {
+                "No se pudo eliminar en Firestore: ${e.localizedMessage ?: e.code.name}"
+            }
+            Result.failure(Exception(msg))
         } catch (e: Exception) {
+            handleFirestoreError("deleteUserFromCloud", e)
             Result.failure(Exception("No se pudo eliminar en Firestore: ${e.localizedMessage}"))
         }
     }
@@ -1583,6 +1618,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun markAppErrorStatus(errorId: String, status: String): Result<Unit> {
+        val currentFbUser = auth.currentUser
+            ?: return Result.failure(
+                IllegalStateException("Conecta tu cuenta Google de Superusuario arriba para administrar AppErrors.")
+            )
         val safeStatus = if (status == "RESOLVED") "RESOLVED" else "OPEN"
         if (errorId.isBlank()) return Result.failure(IllegalArgumentException("ID de error inválido."))
         return try {
@@ -1598,6 +1637,17 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("markAppErrorStatus", e)
+            val msg = when (e.code) {
+                FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                    "Permiso denegado en AppErrors para ${currentFbUser.email ?: "tu cuenta"}. Reconecta Google Superusuario o despliega reglas."
+                FirebaseFirestoreException.Code.NOT_FOUND ->
+                    "Este registro ya no existe en Firestore (actualizando lista)."
+                else ->
+                    "No se pudo actualizar el estado del error: ${e.localizedMessage ?: e.code.name}"
+            }
+            Result.failure(Exception(msg))
         } catch (e: Exception) {
             handleFirestoreError("markAppErrorStatus", e)
             Result.failure(Exception("No se pudo actualizar el estado del error: ${e.localizedMessage}"))
@@ -1605,6 +1655,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deleteAppError(errorId: String): Result<Unit> {
+        val currentFbUser = auth.currentUser
+            ?: return Result.failure(
+                IllegalStateException("Conecta tu cuenta Google de Superusuario arriba para eliminar de AppErrors.")
+            )
         if (errorId.isBlank()) return Result.failure(IllegalArgumentException("ID de error inválido."))
         return try {
             firestore.collection(COLLECTION_APP_ERRORS)
@@ -1614,6 +1668,17 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("deleteAppError", e)
+            val msg = when (e.code) {
+                FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                    "Permiso denegado al eliminar en AppErrors para ${currentFbUser.email ?: "tu cuenta"}. Reconecta Google Superusuario."
+                FirebaseFirestoreException.Code.NOT_FOUND ->
+                    "El registro ya había sido eliminado en Firestore."
+                else ->
+                    "No se pudo eliminar el registro de error: ${e.localizedMessage ?: e.code.name}"
+            }
+            Result.failure(Exception(msg))
         } catch (e: Exception) {
             handleFirestoreError("deleteAppError", e)
             Result.failure(Exception("No se pudo eliminar el registro de error: ${e.localizedMessage}"))
@@ -1622,7 +1687,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
 
     private fun parseAppErrorReport(doc: DocumentSnapshot): com.example.util.AppErrorReport? {
         val data = doc.data ?: return null
-        val id = (data["id"] as? String).orEmpty().ifBlank { doc.id }
+        val id = doc.id
         val occurredAtMs = (data["occurredAtMs"] as? Number)?.toLong() ?: 0L
         val createdAtMs = doc.getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time
             ?: occurredAtMs

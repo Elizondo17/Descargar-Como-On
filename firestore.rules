@@ -70,7 +70,7 @@ service cloud.firestore {
                'updateRequired', 'requiredVersionCode', 'updateLockReason',
                'accessToken', 'parentEmail', 'supervisorChainEmails',
                'hierarchyDepth', 'approvalStatus', 'canManageSubUsers',
-               'visibilityDepth', 'requestedByEmail'
+               'visibilityDepth', 'requestedByEmail', 'tutorialCompleted'
              ]) &&
              data.id is string && data.id.size() >= 3 && data.id.size() <= 80 &&
              data.email is string && data.email == emailKey &&
@@ -104,7 +104,8 @@ service cloud.firestore {
              (!('approvalStatus' in data) || (data.approvalStatus in ['ACTIVE', 'PENDING_APPROVAL', 'REJECTED'])) &&
              (!('canManageSubUsers' in data) || data.canManageSubUsers is bool) &&
              (!('visibilityDepth' in data) || (data.visibilityDepth is int && data.visibilityDepth >= 0 && data.visibilityDepth <= 10)) &&
-             (!('requestedByEmail' in data) || (data.requestedByEmail is string && data.requestedByEmail.size() <= 120));
+             (!('requestedByEmail' in data) || (data.requestedByEmail is string && data.requestedByEmail.size() <= 120)) &&
+             (!('tutorialCompleted' in data) || data.tutorialCompleted is bool);
     }
 
     function isValidTeamConfig(data, configId) {
@@ -160,25 +161,31 @@ service cloud.firestore {
                        );
 
       allow update: if isValidEmailKey(emailKey) &&
+                       isSignedIn() &&
                        (
-                         (isSuperuser() &&
-                          request.resource.data.diff(resource.data).affectedKeys()
-                            .hasOnly(['updateRequired', 'requiredVersionCode', 'updateLockReason', 'isBlocked', 'updatedAt']) &&
+                         (request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['updateRequired', 'requiredVersionCode', 'updateLockReason', 'isBlocked', 'updatedAt']) &&
+                          isSuperuser() &&
                           (!('updateRequired' in request.resource.data) || request.resource.data.updateRequired is bool) &&
                           (!('requiredVersionCode' in request.resource.data) || (request.resource.data.requiredVersionCode is int && request.resource.data.requiredVersionCode >= 0 && request.resource.data.requiredVersionCode <= 100000)) &&
                           (!('updateLockReason' in request.resource.data) || (request.resource.data.updateLockReason is string && request.resource.data.updateLockReason.size() <= 300)) &&
                           (!('isBlocked' in request.resource.data) || request.resource.data.isBlocked is bool) &&
                           request.resource.data.updatedAt is timestamp &&
                           request.resource.data.updatedAt <= request.time) ||
+                         (request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['tutorialCompleted', 'updatedAt']) &&
+                          request.resource.data.tutorialCompleted is bool &&
+                          request.resource.data.updatedAt is timestamp &&
+                          request.resource.data.updatedAt <= request.time &&
+                          (isSuperuser() ||
+                           (emailKey == authEmail() &&
+                            resource.data.isBlocked == false &&
+                            (!('approvalStatus' in resource.data) || resource.data.approvalStatus == 'ACTIVE') &&
+                            resource.data.expiresAt > request.time))) ||
                          (
-                           isValidAuthorizedUser(request.resource.data, emailKey) &&
-                           request.resource.data.email == resource.data.email &&
-                           request.resource.data.id == resource.data.id &&
-                           request.resource.data.createdAt == resource.data.createdAt &&
                            (
                              isSuperuser() ||
-                             (isSignedIn() &&
-                              emailKey == authEmail() &&
+                             (emailKey == authEmail() &&
                               resource.data.isBlocked == false &&
                               (!('approvalStatus' in resource.data) || resource.data.approvalStatus == 'ACTIVE') &&
                               resource.data.expiresAt > request.time &&
@@ -186,7 +193,7 @@ service cloud.firestore {
                                 .hasOnly([
                                   'boundDeviceIds', 'boundDeviceLabels', 'ownerUid',
                                   'updatedAt', 'lastTamperAlertAtMs',
-                                  'updateRequired', 'updateLockReason'
+                                  'updateRequired', 'updateLockReason', 'tutorialCompleted'
                                 ]) &&
                               (!('updateRequired' in request.resource.data.diff(resource.data).affectedKeys()) ||
                                 request.resource.data.updateRequired == false) &&
@@ -198,7 +205,11 @@ service cloud.firestore {
                                 (resource.data.ownerUid == '' && request.resource.data.ownerUid == request.auth.uid) ||
                                 (resource.data.ownerUid == request.auth.uid && request.resource.data.ownerUid == resource.data.ownerUid)
                               ))
-                           )
+                           ) &&
+                           request.resource.data.email == resource.data.email &&
+                           request.resource.data.id == resource.data.id &&
+                           request.resource.data.createdAt == resource.data.createdAt &&
+                           isValidAuthorizedUser(request.resource.data, emailKey)
                          )
                        );
 
@@ -741,6 +752,67 @@ service cloud.firestore {
                        );
 
       allow update, delete: if isValidNotificationId(notifId) && isSuperuser();
+    }
+
+    function isValidMensajeId(mensajeId) {
+      return mensajeId is string &&
+             mensajeId.size() >= 3 &&
+             mensajeId.size() <= 80 &&
+             mensajeId.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidMensajeGlobal(data) {
+      return data.keys().hasAll([
+               'titulo', 'mensaje', 'prioridad', 'activo',
+               'autorEmail', 'autorNombre', 'autorUid', 'creadoEnMs',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'titulo', 'mensaje', 'prioridad', 'activo',
+               'autorEmail', 'autorNombre', 'autorUid', 'creadoEnMs',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.titulo is string && data.titulo.size() >= 1 && data.titulo.size() <= 120 &&
+             data.mensaje is string && data.mensaje.size() >= 1 && data.mensaje.size() <= 1000 &&
+             data.prioridad in ['INFO', 'IMPORTANTE', 'URGENTE'] &&
+             data.activo is bool &&
+             data.autorEmail is string && isValidEmailKey(data.autorEmail) &&
+             data.autorNombre is string && data.autorNombre.size() >= 1 && data.autorNombre.size() <= 80 &&
+             data.autorUid is string && data.autorUid.size() >= 1 && data.autorUid.size() <= 128 &&
+             data.creadoEnMs is int && data.creadoEnMs >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /mensajes_globales/{mensajeId} {
+      allow get: if isValidMensajeId(mensajeId) &&
+                    (isSuperuser() || (isSignedIn() && resource.data.activo == true));
+
+      // Zero get()/exists() inside allow list: Bootstrap admin or active global announcements
+      allow list: if isBootstrapAdmin() ||
+                     (isSignedIn() && resource.data.activo == true);
+
+      allow create: if isValidMensajeId(mensajeId) &&
+                       isSuperuser() &&
+                       isValidMensajeGlobal(request.resource.data) &&
+                       request.resource.data.autorEmail == authEmail() &&
+                       request.resource.data.autorUid == request.auth.uid;
+
+      allow update: if isValidMensajeId(mensajeId) &&
+                       isSuperuser() &&
+                       (
+                         (request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['activo', 'updatedAt']) &&
+                          request.resource.data.activo is bool &&
+                          request.resource.data.updatedAt is timestamp &&
+                          request.resource.data.updatedAt <= request.time) ||
+                         (isValidMensajeGlobal(request.resource.data) &&
+                          request.resource.data.autorEmail == resource.data.autorEmail &&
+                          request.resource.data.autorUid == resource.data.autorUid &&
+                          request.resource.data.createdAt == resource.data.createdAt)
+                       );
+
+      allow delete: if isValidMensajeId(mensajeId) && isSuperuser();
     }
   }
 }

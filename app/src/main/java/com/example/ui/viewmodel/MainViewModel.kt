@@ -45,6 +45,8 @@ import com.example.data.model.HierarchyRequest
 import com.example.data.model.HierarchyRequestStatus
 import com.example.data.model.HierarchyRequestType
 import com.example.data.model.HierarchyTreeBuilder
+import com.example.data.model.MensajeGlobal
+import com.example.data.model.MensajeGlobalPrioridad
 import com.example.data.model.SellerActivityBucket
 import com.example.data.model.TeamNotification
 import com.example.data.model.TeamNotificationPriority
@@ -227,6 +229,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _dismissedBannerIds = MutableStateFlow<Set<String>>(emptySet())
 
+    private val _mensajesGlobales = MutableStateFlow<List<MensajeGlobal>>(emptyList())
+    val mensajesGlobales: StateFlow<List<MensajeGlobal>> = _mensajesGlobales.asStateFlow()
+
+    private val _dismissedGlobalBannerIds = MutableStateFlow<Set<String>>(emptySet())
+    val dismissedGlobalBannerIds: StateFlow<Set<String>> = _dismissedGlobalBannerIds.asStateFlow()
+
     private val _teamNotificationFeedback = MutableStateFlow<String?>(null)
     val teamNotificationFeedback: StateFlow<String?> = _teamNotificationFeedback.asStateFlow()
 
@@ -248,6 +256,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var appErrorsListenerJob: Job? = null
     private var accessTokensListenerJob: Job? = null
     private var teamNotificationsListenerJob: Job? = null
+    private var mensajesGlobalesListenerJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var wasAutoPausedByLicenseLock: Boolean = false
     private var hasCheckedAppUpdateOnLaunch: Boolean = false
@@ -630,12 +639,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.saveHasSeenSetupGuide(dismissed)
     }
 
-    private val _hasSeenWelcomeTutorial = MutableStateFlow(repository.hasSeenWelcomeTutorial())
-    val hasSeenWelcomeTutorial: StateFlow<Boolean> = _hasSeenWelcomeTutorial.asStateFlow()
+    private val _tutorialStateTick = MutableStateFlow(0)
+
+    val hasSeenWelcomeTutorial: StateFlow<Boolean> = combine(
+        currentUser,
+        _tutorialStateTick
+    ) { user, _ ->
+        if (user == null) {
+            repository.hasSeenWelcomeTutorial()
+        } else {
+            val userKey = user.normalizedEmail.ifBlank { user.id }
+            user.tutorialCompleted ||
+                repository.hasSeenWelcomeTutorialForUser(userKey) ||
+                (user.email.isBlank() && repository.hasSeenWelcomeTutorial())
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, repository.hasSeenWelcomeTutorial())
 
     fun setWelcomeTutorialSeen(seen: Boolean) {
-        _hasSeenWelcomeTutorial.value = seen
-        repository.saveHasSeenWelcomeTutorial(seen)
+        val activeUser = currentUser.value
+        if (activeUser == null) {
+            repository.saveHasSeenWelcomeTutorial(seen)
+            _tutorialStateTick.value = _tutorialStateTick.value + 1
+            return
+        }
+        val userKey = activeUser.normalizedEmail.ifBlank { activeUser.id }
+        repository.saveHasSeenWelcomeTutorialForUser(userKey, seen)
+        if (activeUser.email.isBlank()) {
+            repository.saveHasSeenWelcomeTutorial(seen)
+        }
+        _tutorialStateTick.value = _tutorialStateTick.value + 1
+        viewModelScope.launch {
+            repository.markWelcomeTutorialCompletedLocally(activeUser, seen)
+            if (activeUser.normalizedEmail.isNotBlank()) {
+                repository.cloudTeamRepository?.markTutorialCompleted(activeUser.normalizedEmail, seen)
+            }
+        }
     }
 
     private val _activePsaCountry = MutableStateFlow(com.example.util.PsaPortalSyncManager.getSelectedCountry(application))
@@ -751,6 +789,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         notifications.firstOrNull { notif ->
             notif.id !in readIds &&
                 notif.id !in dismissedIds &&
+                notif.parsedType != TeamNotificationType.SUPERUSER_GLOBAL &&
                 (notif.parsedPriority == TeamNotificationPriority.IMPORTANT ||
                     notif.parsedPriority == TeamNotificationPriority.URGENT ||
                     notif.parsedType == TeamNotificationType.APP_UPDATE)
@@ -1438,6 +1477,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         repository.upsertUserLocally(updated)
                         repository.setCurrentUser(updated)
+                        if (!updated.tutorialCompleted &&
+                            updated.normalizedEmail.isNotBlank() &&
+                            repository.hasSeenWelcomeTutorialForUser(updated.normalizedEmail)
+                        ) {
+                            launch {
+                                cloudRepo.markTutorialCompleted(updated.normalizedEmail, true)
+                            }
+                        }
                         evaluateLicenseNow(updated)
                     }
                 }
@@ -1469,6 +1516,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appErrorsListenerJob?.cancel()
         accessTokensListenerJob?.cancel()
         teamNotificationsListenerJob?.cancel()
+        mensajesGlobalesListenerJob?.cancel()
+        mensajesGlobalesListenerJob = viewModelScope.launch {
+            cloudRepo.observeMensajesGlobales(
+                includeInactiveForSuperuser = signedUser.role == "SUPERUSER"
+            ).collect { list ->
+                _mensajesGlobales.value = list
+            }
+        }
         teamNotificationsListenerJob = viewModelScope.launch {
             cloudRepo.observeTeamNotificationsForUser(
                 viewerEmailRaw = signedUser.normalizedEmail,
@@ -1587,6 +1642,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appErrorsListenerJob?.cancel()
         accessTokensListenerJob?.cancel()
         teamNotificationsListenerJob?.cancel()
+        mensajesGlobalesListenerJob?.cancel()
         userListenerJob = null
         allUsersListenerJob = null
         subordinateUsersListenerJob = null
@@ -1601,6 +1657,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appErrorsListenerJob = null
         accessTokensListenerJob = null
         teamNotificationsListenerJob = null
+        mensajesGlobalesListenerJob = null
+        _mensajesGlobales.value = emptyList()
+        _dismissedGlobalBannerIds.value = emptySet()
     }
 
     fun flushPendingAppErrorsNow(manualFeedback: Boolean = false) {
@@ -3448,6 +3507,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _dismissedBannerIds.value = _dismissedBannerIds.value + notifId
     }
 
+    fun dismissGlobalBannerTemporarily(mensajeId: String) {
+        if (mensajeId.isBlank()) return
+        _dismissedGlobalBannerIds.value = _dismissedGlobalBannerIds.value + mensajeId
+    }
+
+    fun toggleMensajeGlobalActivo(mensajeId: String, activo: Boolean) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") {
+            _teamNotificationFeedback.value = "Solo el Superusuario puede administrar mensajes globales."
+            return
+        }
+        viewModelScope.launch {
+            cloudRepo.setMensajeGlobalActivo(mensajeId, activo).fold(
+                onSuccess = {
+                    _teamNotificationFeedback.value = if (activo) {
+                        "✅ Banner global reactivado para todos los vendedores."
+                    } else {
+                        "⏸️ Banner global desactivado."
+                    }
+                },
+                onFailure = { err ->
+                    _teamNotificationFeedback.value = err.message ?: "No se pudo actualizar el banner global."
+                }
+            )
+        }
+    }
+
+    fun deleteMensajeGlobal(mensajeId: String) {
+        val cloudRepo = repository.cloudTeamRepository ?: return
+        if (currentUser.value?.role != "SUPERUSER") {
+            _teamNotificationFeedback.value = "Solo el Superusuario puede eliminar mensajes globales."
+            return
+        }
+        viewModelScope.launch {
+            cloudRepo.deleteMensajeGlobal(mensajeId).fold(
+                onSuccess = {
+                    _teamNotificationFeedback.value = "🗑️ Banner global eliminado."
+                },
+                onFailure = { err ->
+                    _teamNotificationFeedback.value = err.message ?: "No se pudo eliminar el banner global."
+                }
+            )
+        }
+    }
+
     fun markNotificationRead(notifId: String) {
         if (notifId.isBlank()) return
         viewModelScope.launch {
@@ -3485,8 +3589,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             TeamNotificationType.SUPERUSER_DIRECT
         }
+        val senderDisplayName = currentUser.value?.username.orEmpty()
         viewModelScope.launch {
-            cloudRepo.publishTeamNotification(
+            val globalPrioridad = when (priority) {
+                TeamNotificationPriority.URGENT -> MensajeGlobalPrioridad.URGENTE
+                TeamNotificationPriority.IMPORTANT -> MensajeGlobalPrioridad.IMPORTANTE
+                TeamNotificationPriority.INFO -> MensajeGlobalPrioridad.INFO
+            }
+            val bannerResult = if (targetMode == TeamNotificationTargetMode.ALL) {
+                cloudRepo.publishMensajeGlobal(
+                    titulo = title,
+                    mensaje = body,
+                    prioridad = globalPrioridad,
+                    autorNombreOverride = senderDisplayName
+                )
+            } else {
+                null
+            }
+            val notifResult = cloudRepo.publishTeamNotification(
                 type = notifType,
                 priority = priority,
                 targetMode = targetMode,
@@ -3494,16 +3614,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 title = title,
                 body = body,
                 actionUrl = actionUrl,
-                senderNameOverride = currentUser.value?.username.orEmpty()
-            ).fold(
-                onSuccess = {
-                    val scopeLabel = if (targetMode == TeamNotificationTargetMode.ALL) "todos los vendedores" else targetEmail
-                    _teamNotificationFeedback.value = "✅ Aviso enviado a $scopeLabel."
-                },
-                onFailure = { err ->
-                    _teamNotificationFeedback.value = err.message ?: "No se pudo enviar el aviso."
-                }
+                senderNameOverride = senderDisplayName
             )
+            if (notifResult.isSuccess || bannerResult?.isSuccess == true) {
+                val scopeLabel = if (targetMode == TeamNotificationTargetMode.ALL) {
+                    "todos los vendedores (BannerAviso + Campanita)"
+                } else {
+                    targetEmail
+                }
+                _teamNotificationFeedback.value = "✅ Aviso enviado a $scopeLabel."
+            } else {
+                val err = notifResult.exceptionOrNull() ?: bannerResult?.exceptionOrNull()
+                _teamNotificationFeedback.value = err?.message ?: "No se pudo enviar el aviso."
+            }
         }
     }
 

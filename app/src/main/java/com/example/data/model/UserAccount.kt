@@ -36,7 +36,8 @@ data class UserAccount(
     val approvalStatus: String = "ACTIVE", // "ACTIVE", "PENDING_APPROVAL", "REJECTED"
     val canManageSubUsers: Boolean = false,
     val visibilityDepth: Int = 0, // 0 = full subtree below user, N = max N levels down
-    val requestedByEmail: String = ""
+    val requestedByEmail: String = "",
+    val tutorialCompleted: Boolean = false
 ) {
     val createdAtMs: Long
         get() = createdAt

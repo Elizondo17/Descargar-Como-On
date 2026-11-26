@@ -109,6 +109,10 @@
           "type": "string",
           "description": "Superior email who originally proposed this sub-user"
         },
+        "tutorialCompleted": {
+          "type": "boolean",
+          "description": "Whether the seller has completed or dismissed the one-time interactive welcome tutorial"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -488,6 +492,68 @@
         "senderEmail", "senderName", "senderUid", "title", "body",
         "createdAtMs", "createdAt"
       ]
+    },
+    "MensajeGlobal": {
+      "title": "MensajeGlobal",
+      "description": "Important global announcements published by the Superuser to all sellers in mensajes_globales and shown in BannerAviso.",
+      "type": "object",
+      "properties": {
+        "titulo": {
+          "type": "string",
+          "description": "Short announcement headline shown in BannerAviso"
+        },
+        "mensaje": {
+          "type": "string",
+          "description": "Full announcement message body shown in BannerAviso"
+        },
+        "prioridad": {
+          "type": "string",
+          "enum": ["INFO", "IMPORTANTE", "URGENTE"],
+          "description": "Visual urgency level for BannerAviso"
+        },
+        "activo": {
+          "type": "boolean",
+          "description": "Whether the announcement is currently active for sellers"
+        },
+        "autorEmail": {
+          "type": "string",
+          "description": "Superuser normalized lowercase email"
+        },
+        "autorNombre": {
+          "type": "string",
+          "description": "Display name of the Superuser author"
+        },
+        "autorUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the Superuser author"
+        },
+        "creadoEnMs": {
+          "type": "integer",
+          "description": "Client creation epoch milliseconds for ordering"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": [
+        "titulo",
+        "mensaje",
+        "prioridad",
+        "activo",
+        "autorEmail",
+        "autorNombre",
+        "autorUid",
+        "creadoEnMs",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -530,6 +596,10 @@
     "/team_notifications/{notifId}": {
       "schema": { "$ref": "#/entities/TeamNotification" },
       "description": "Global/individual admin alerts, app update notices, and leader-to-seller encouragement messages"
+    },
+    "/mensajes_globales/{mensajeId}": {
+      "schema": { "$ref": "#/entities/MensajeGlobal" },
+      "description": "Global Superuser announcements rendered at the top of the main UI in BannerAviso"
     }
   }
 }

@@ -125,11 +125,13 @@ import com.example.ui.theme.SlateCardBorder
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.components.SuperuserStatsDashboard
 import com.example.ui.viewmodel.MainViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.roundToInt
 
 enum class AdminPrimaryTab {
     OPERATORS,
@@ -181,6 +183,7 @@ fun SuperuserScreen(
     val accessTokenActionFeedback by viewModel.accessTokenActionFeedback.collectAsState()
     val adminUserActionFeedback by viewModel.adminUserActionFeedback.collectAsState()
     val teamNotificationFeedback by viewModel.teamNotificationFeedback.collectAsState()
+    val mensajesGlobales by viewModel.mensajesGlobales.collectAsState()
     val businessProfile by viewModel.businessProfile.collectAsState()
     val allScannedChats by viewModel.allScannedChats.collectAsState()
     val isGlobalLegacyEnabled by viewModel.isGlobalLegacyEnabled.collectAsState()
@@ -1869,6 +1872,77 @@ fun SuperuserScreen(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.5.sp
                                 )
+                            }
+
+                            if (mensajesGlobales.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Banners Globales en Pantalla (${mensajesGlobales.count { it.activo }} activos)",
+                                    color = com.example.ui.theme.PsaCyanGlow,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                mensajesGlobales.take(5).forEach { msg ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color.Black.copy(alpha = 0.28f))
+                                            .border(
+                                                1.dp,
+                                                if (msg.activo) com.example.ui.theme.PsaCyanGlow.copy(alpha = 0.4f) else SlateCardBorder,
+                                                RoundedCornerShape(8.dp)
+                                            )
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Text(
+                                                text = "${if (msg.activo) "🟢" else "⏸️"} ${msg.titulo}",
+                                                color = TextPrimary,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1
+                                            )
+                                            Text(
+                                                text = msg.mensaje,
+                                                color = TextSecondary,
+                                                fontSize = 11.sp,
+                                                maxLines = 2
+                                            )
+                                        }
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            TextButton(
+                                                onClick = {
+                                                    viewModel.toggleMensajeGlobalActivo(msg.id, !msg.activo)
+                                                },
+                                                modifier = Modifier.heightIn(min = 48.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (msg.activo) "Desactivar" else "Activar",
+                                                    color = if (msg.activo) AmberDelay else EmeraldSuccess,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = { viewModel.deleteMensajeGlobal(msg.id) },
+                                                modifier = Modifier.size(48.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Eliminar banner global",
+                                                    tint = RoseError,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -3721,6 +3795,14 @@ fun SuperuserScreen(
                 }
             }
 
+            item {
+                SuperuserStatsDashboard(
+                    stats = sellerPerformanceBoard,
+                    isCloudConnected = isCloudGoogleConnected,
+                    onRefreshStats = { viewModel.refreshSellerPerformanceBoard() }
+                )
+            }
+
             if (sellerPerformanceBoard.isNotEmpty()) {
                 item {
                     val totalContacts = sellerPerformanceBoard.sumOf { it.totalContacts }
@@ -3759,6 +3841,11 @@ fun SuperuserScreen(
                 }
 
                 items(sellerPerformanceBoard) { stat ->
+                    val sellerMessagesSent = maxOf(stat.messagesTotal, stat.messagesSuccess + stat.messagesFailed)
+                    val sellerPortfolioDenom = maxOf(stat.totalContacts, stat.totalVisits, stat.closedSales)
+                    val sellerConvPct = if (sellerPortfolioDenom > 0) {
+                        (stat.closedSales * 100f / sellerPortfolioDenom).coerceIn(0f, 100f)
+                    } else 0f
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -3799,6 +3886,8 @@ fun SuperuserScreen(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
+                                Text("📤 ${stat.messagesSuccess}/$sellerMessagesSent msgs (${stat.messagingSuccessRate.roundToInt()}%)", color = com.example.ui.theme.PsaCyanGlow, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text("📈 ${"%.1f".format(sellerConvPct)}% conv.", color = PurpleNeon, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 Text("📞 ${stat.totalContacts} contactos", color = IndigoPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 Text("🏠 ${stat.totalVisits} visitas", color = com.example.ui.theme.PsaCyanGlow, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 Text("🔬 ${stat.completedDemos} demos", color = PurpleNeon, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -3806,28 +3895,6 @@ fun SuperuserScreen(
                                 Text("🔧 ${stat.pendingReplacements} recambios pend.", color = AmberDelay, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
-                    }
-                }
-            } else {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(SlateCard)
-                            .border(1.dp, SlateCardBorder, RoundedCornerShape(14.dp))
-                            .padding(20.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (isCloudGoogleConnected) {
-                                "Todavía no hay métricas sincronizadas de vendedores en la nube."
-                            } else {
-                                "Conecta tu cuenta Google arriba para consultar el rendimiento del equipo."
-                            },
-                            color = TextSecondary,
-                            fontSize = 13.sp
-                        )
                     }
                 }
             }

@@ -36,7 +36,7 @@ import com.example.data.model.UserToken
         CallReminderEntity::class,
         ReadNotificationEntity::class
     ],
-    version = 17,
+    version = 18,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -102,6 +102,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                var hasColumn = false
+                db.query("PRAGMA table_info(`users`)").use { cursor ->
+                    val nameIndex = cursor.getColumnIndex("name")
+                    while (cursor.moveToNext()) {
+                        if (nameIndex >= 0 && cursor.getString(nameIndex) == "tutorialCompleted") {
+                            hasColumn = true
+                            break
+                        }
+                    }
+                }
+                if (!hasColumn) {
+                    db.execSQL(
+                        "ALTER TABLE `users` ADD COLUMN `tutorialCompleted` INTEGER NOT NULL DEFAULT 0"
+                    )
+                }
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -112,7 +132,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ezocrm_database.db"
                 )
-                    .addMigrations(MIGRATION_15_16, MIGRATION_16_17)
+                    .addMigrations(MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

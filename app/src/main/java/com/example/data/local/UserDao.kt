@@ -67,4 +67,7 @@ interface UserDao {
 
     @Query("UPDATE users SET updateRequired = :updateRequired, requiredVersionCode = :requiredVersionCode, updateLockReason = :reason WHERE id = :userId")
     suspend fun setUserUpdateLock(userId: String, updateRequired: Boolean, requiredVersionCode: Int, reason: String)
+
+    @Query("UPDATE users SET tutorialCompleted = :completed WHERE id = :userId")
+    suspend fun setTutorialCompleted(userId: String, completed: Boolean)
 }

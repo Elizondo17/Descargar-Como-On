@@ -1280,3 +1280,168 @@ test("SellerPerformanceStats supports 30-day recentActivityJson up to 10000 char
   await assertSucceeds(subDb.collection("team_notifications").where("targetEmail", "==", subEmail).get());
   await assertSucceeds(leaderDb.collection("team_notifications").where("senderEmail", "==", leaderEmail).get());
 });
+
+test("authorized_users tutorialCompleted flag and mensajes_globales BannerAviso enforce strict ACLs", async () => {
+  const sellerEmail = "tutorialseller@gmail.com";
+  const otherEmail = "otherguy@gmail.com";
+  const blockedEmail = "blockedseller@gmail.com";
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("authorized_users").doc(sellerEmail).set(
+      buildUserDoc({
+        id: "tut_1",
+        email: sellerEmail,
+        username: "Vendedor Tutorial",
+        ownerUid: "uid-tut-1",
+        boundDeviceIds: ["dev-tut-1"],
+        boundDeviceLabels: ["Pixel 8"],
+        tutorialCompleted: false,
+      })
+    );
+    await db.collection("authorized_users").doc(otherEmail).set(
+      buildUserDoc({
+        id: "tut_2",
+        email: otherEmail,
+        username: "Otro Vendedor",
+        ownerUid: "uid-tut-2",
+        boundDeviceIds: ["dev-tut-2"],
+        boundDeviceLabels: ["Galaxy"],
+      })
+    );
+    await db.collection("authorized_users").doc(blockedEmail).set(
+      buildUserDoc({
+        id: "tut_3",
+        email: blockedEmail,
+        username: "Bloqueado",
+        ownerUid: "uid-tut-3",
+        boundDeviceIds: ["dev-tut-3"],
+        boundDeviceLabels: ["Moto"],
+        isBlocked: true,
+      })
+    );
+  });
+
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", { email: ADMIN_EMAIL, email_verified: true })
+    .firestore();
+  const sellerDb = testEnv
+    .authenticatedContext("uid-tut-1", { email: sellerEmail, email_verified: true })
+    .firestore();
+  const otherDb = testEnv
+    .authenticatedContext("uid-tut-2", { email: otherEmail, email_verified: true })
+    .firestore();
+  const blockedDb = testEnv
+    .authenticatedContext("uid-tut-3", { email: blockedEmail, email_verified: true })
+    .firestore();
+  const anonDb = testEnv.unauthenticatedContext().firestore();
+
+  // Active seller can mark tutorialCompleted on own profile
+  await assertSucceeds(
+    sellerDb.collection("authorized_users").doc(sellerEmail).update({
+      tutorialCompleted: true,
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Blocked user cannot update tutorialCompleted; seller cannot mutate another user's flag or escalate role
+  await assertFails(
+    blockedDb.collection("authorized_users").doc(blockedEmail).update({
+      tutorialCompleted: true,
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertFails(
+    otherDb.collection("authorized_users").doc(sellerEmail).update({
+      tutorialCompleted: false,
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertFails(
+    sellerDb.collection("authorized_users").doc(sellerEmail).update({
+      tutorialCompleted: "true",
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertFails(
+    sellerDb.collection("authorized_users").doc(sellerEmail).update({
+      tutorialCompleted: true,
+      role: "SUPERUSER",
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Superuser can publish active & inactive mensajes_globales
+  await assertSucceeds(
+    adminDb.collection("mensajes_globales").doc("msg_global_activo").set({
+      titulo: "Reunion Mensual PSA",
+      mensaje: "Hoy 19hs capacitacion de cierre y demostracion de agua.",
+      prioridad: "IMPORTANTE",
+      activo: true,
+      autorEmail: ADMIN_EMAIL,
+      autorNombre: "Administrador",
+      autorUid: "uid-admin",
+      creadoEnMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("mensajes_globales").doc("msg_global_inactivo").set({
+      titulo: "Borrador Oculto",
+      mensaje: "Todavia no publicar.",
+      prioridad: "INFO",
+      activo: false,
+      autorEmail: ADMIN_EMAIL,
+      autorNombre: "Administrador",
+      autorUid: "uid-admin",
+      creadoEnMs: Date.now() - 2000,
+      createdAt: pastDate(50),
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Unauthenticated denied; regular seller cannot create, update, or delete mensajes_globales
+  await assertFails(anonDb.collection("mensajes_globales").doc("msg_global_activo").get());
+  await assertFails(
+    sellerDb.collection("mensajes_globales").doc("msg_seller_spoof").set({
+      titulo: "Spoof",
+      mensaje: "Intento no autorizado",
+      prioridad: "URGENTE",
+      activo: true,
+      autorEmail: sellerEmail,
+      autorNombre: "Vendedor",
+      autorUid: "uid-tut-1",
+      creadoEnMs: Date.now() - 500,
+      createdAt: pastDate(50),
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertFails(
+    sellerDb.collection("mensajes_globales").doc("msg_global_activo").update({
+      activo: false,
+      updatedAt: pastDate(20),
+    })
+  );
+  await assertFails(
+    sellerDb.collection("mensajes_globales").doc("msg_global_activo").delete()
+  );
+
+  // Signed-in sellers can read active global messages via get or filtered list (activo == true), but not inactive or unfiltered list
+  await assertSucceeds(sellerDb.collection("mensajes_globales").doc("msg_global_activo").get());
+  await assertSucceeds(sellerDb.collection("mensajes_globales").where("activo", "==", true).get());
+  await assertFails(sellerDb.collection("mensajes_globales").doc("msg_global_inactivo").get());
+  await assertFails(sellerDb.collection("mensajes_globales").get());
+
+  // Superuser can deactivate and delete mensajes_globales and list all
+  await assertSucceeds(adminDb.collection("mensajes_globales").get());
+  await assertSucceeds(
+    adminDb.collection("mensajes_globales").doc("msg_global_activo").update({
+      activo: false,
+      updatedAt: pastDate(10),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("mensajes_globales").doc("msg_global_inactivo").delete()
+  );
+});

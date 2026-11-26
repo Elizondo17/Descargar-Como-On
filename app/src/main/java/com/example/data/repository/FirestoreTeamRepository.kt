@@ -17,6 +17,8 @@ import com.example.data.model.HierarchyRequest
 import com.example.data.model.HierarchyRequestStatus
 import com.example.data.model.HierarchyRequestType
 import com.example.data.model.HierarchyTreeBuilder
+import com.example.data.model.MensajeGlobal
+import com.example.data.model.MensajeGlobalPrioridad
 import com.example.data.model.PsaContactLead
 import com.example.data.model.PsaHomeVisit
 import com.example.data.model.PsaLeadStatus
@@ -98,6 +100,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         private const val COLLECTION_ACCESS_TOKENS = "access_tokens"
         private const val COLLECTION_HIERARCHY_REQUESTS = "hierarchy_requests"
         private const val COLLECTION_TEAM_NOTIFICATIONS = "team_notifications"
+        private const val COLLECTION_GLOBAL_MESSAGES = "mensajes_globales"
         private const val KEY_DEVICE_ID = "persistent_hardware_device_id"
         private const val KEY_LAST_SYNCED_UID = "last_synced_seller_uid"
         const val BOOTSTRAP_ADMIN_EMAIL = "leonelizondo16@gmail.com"
@@ -1003,6 +1006,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         val canManageSubUsers = (data["canManageSubUsers"] as? Boolean) ?: false
         val visibilityDepth = ((data["visibilityDepth"] as? Number)?.toInt() ?: 0).coerceIn(0, 10)
         val requestedByEmail = normalizeEmail((data["requestedByEmail"] as? String).orEmpty()).take(120)
+        val tutorialCompleted = (data["tutorialCompleted"] as? Boolean) ?: false
 
         return UserAccount(
             id = id,
@@ -1032,7 +1036,8 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             approvalStatus = approvalStatus,
             canManageSubUsers = canManageSubUsers,
             visibilityDepth = visibilityDepth,
-            requestedByEmail = requestedByEmail
+            requestedByEmail = requestedByEmail,
+            tutorialCompleted = tutorialCompleted
         )
     }
 
@@ -1067,6 +1072,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             "canManageSubUsers" to user.canManageSubUsers,
             "visibilityDepth" to user.visibilityDepth.coerceIn(0, 10),
             "requestedByEmail" to normalizeEmail(user.requestedByEmail).take(120),
+            "tutorialCompleted" to user.tutorialCompleted,
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
@@ -1097,8 +1103,35 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             "canManageSubUsers" to user.canManageSubUsers,
             "visibilityDepth" to user.visibilityDepth.coerceIn(0, 10),
             "requestedByEmail" to normalizeEmail(user.requestedByEmail).take(120),
+            "tutorialCompleted" to user.tutorialCompleted,
             "updatedAt" to FieldValue.serverTimestamp()
         )
+    }
+
+    suspend fun markTutorialCompleted(emailRaw: String, completed: Boolean = true): Result<Unit> {
+        auth.currentUser
+            ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
+        val emailKey = normalizeEmail(emailRaw)
+        if (emailKey.isBlank()) {
+            return Result.failure(IllegalArgumentException("Usuario sin correo configurado."))
+        }
+        return try {
+            firestore.collection(COLLECTION_USERS)
+                .document(emailKey)
+                .update(
+                    mapOf(
+                        "tutorialCompleted" to completed,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("markTutorialCompleted", e)
+            Result.failure(e)
+        }
     }
 
     // =====================================================================
@@ -2679,6 +2712,171 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             actionUrl = (data["actionUrl"] as? String).orEmpty(),
             requiredVersionCode = ((data["requiredVersionCode"] as? Number)?.toInt() ?: 0).coerceIn(0, 100000),
             createdAtMs = maxOf(rawMs, serverMs)
+        )
+    }
+
+    // =====================================================================
+    // GLOBAL BANNER ANNOUNCEMENTS (/mensajes_globales/{mensajeId})
+    // =====================================================================
+
+    fun observeMensajesGlobales(includeInactiveForSuperuser: Boolean = false): Flow<List<MensajeGlobal>> = callbackFlow {
+        val fbUser = auth.currentUser
+        if (fbUser == null) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val viewerEmail = normalizeEmail(fbUser.email.orEmpty())
+        val canListAll = includeInactiveForSuperuser && viewerEmail == BOOTSTRAP_ADMIN_EMAIL
+        val query = if (canListAll) {
+            firestore.collection(COLLECTION_GLOBAL_MESSAGES)
+        } else {
+            firestore.collection(COLLECTION_GLOBAL_MESSAGES).whereEqualTo("activo", true)
+        }
+        val reg: ListenerRegistration = query.addSnapshotListener { snapshots, error ->
+            if (error != null) {
+                handleFirestoreError("observeMensajesGlobales", error)
+                return@addSnapshotListener
+            }
+            val list = snapshots?.documents
+                ?.mapNotNull { parseMensajeGlobal(it) }
+                .orEmpty()
+                .sortedByDescending { it.creadoEnMs }
+            trySend(list)
+        }
+        awaitClose { reg.remove() }
+    }
+
+    suspend fun publishMensajeGlobal(
+        titulo: String,
+        mensaje: String,
+        prioridad: MensajeGlobalPrioridad = MensajeGlobalPrioridad.IMPORTANTE,
+        autorNombreOverride: String = ""
+    ): Result<MensajeGlobal> {
+        val currentFbUser = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Inicia sesión con Google antes de publicar anuncios globales."))
+        val autorEmail = normalizeEmail(currentFbUser.email.orEmpty())
+        if (autorEmail.isBlank()) {
+            return Result.failure(IllegalStateException("Tu cuenta Google no devolvió un correo válido."))
+        }
+        val cleanTitulo = titulo.trim().take(120)
+        val cleanMensaje = mensaje.trim().take(1000)
+        if (cleanTitulo.isBlank() || cleanMensaje.isBlank()) {
+            return Result.failure(IllegalArgumentException("Completa el título y el mensaje del anuncio global."))
+        }
+        val cleanAutorNombre = autorNombreOverride.trim()
+            .ifBlank { currentFbUser.displayName?.trim().orEmpty() }
+            .ifBlank { autorEmail.substringBefore("@") }
+            .take(80)
+        val mensajeId = "msg_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        val nowMs = System.currentTimeMillis()
+        val payload = hashMapOf<String, Any>(
+            "titulo" to cleanTitulo,
+            "mensaje" to cleanMensaje,
+            "prioridad" to prioridad.name,
+            "activo" to true,
+            "autorEmail" to autorEmail,
+            "autorNombre" to cleanAutorNombre,
+            "autorUid" to currentFbUser.uid.take(128),
+            "creadoEnMs" to nowMs,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        return try {
+            firestore.collection(COLLECTION_GLOBAL_MESSAGES)
+                .document(mensajeId)
+                .set(payload)
+                .await()
+            Result.success(
+                MensajeGlobal(
+                    id = mensajeId,
+                    titulo = cleanTitulo,
+                    mensaje = cleanMensaje,
+                    prioridad = prioridad.name,
+                    activo = true,
+                    autorEmail = autorEmail,
+                    autorNombre = cleanAutorNombre,
+                    autorUid = currentFbUser.uid,
+                    creadoEnMs = nowMs
+                )
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("publishMensajeGlobal", e)
+            val msg = if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                "Solo el Superusuario puede publicar anuncios en mensajes_globales."
+            } else {
+                "Error publicando anuncio global: ${e.localizedMessage ?: e.code.name}"
+            }
+            Result.failure(Exception(msg))
+        } catch (e: Exception) {
+            handleFirestoreError("publishMensajeGlobal", e)
+            Result.failure(Exception("Error publicando anuncio global: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun setMensajeGlobalActivo(mensajeId: String, activo: Boolean): Result<Unit> {
+        auth.currentUser
+            ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
+        val cleanId = mensajeId.trim()
+        if (cleanId.length < 3) {
+            return Result.failure(IllegalArgumentException("ID de anuncio inválido."))
+        }
+        return try {
+            firestore.collection(COLLECTION_GLOBAL_MESSAGES)
+                .document(cleanId)
+                .update(
+                    mapOf(
+                        "activo" to activo,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("setMensajeGlobalActivo", e)
+            Result.failure(Exception("No se pudo actualizar el anuncio: ${e.localizedMessage}"))
+        }
+    }
+
+    suspend fun deleteMensajeGlobal(mensajeId: String): Result<Unit> {
+        auth.currentUser
+            ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
+        val cleanId = mensajeId.trim()
+        if (cleanId.length < 3) {
+            return Result.failure(IllegalArgumentException("ID de anuncio inválido."))
+        }
+        return try {
+            firestore.collection(COLLECTION_GLOBAL_MESSAGES)
+                .document(cleanId)
+                .delete()
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("deleteMensajeGlobal", e)
+            Result.failure(Exception("No se pudo eliminar el anuncio: ${e.localizedMessage}"))
+        }
+    }
+
+    private fun parseMensajeGlobal(doc: DocumentSnapshot): MensajeGlobal? {
+        val data = doc.data ?: return null
+        val serverMs = doc.getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
+        val rawMs = (data["creadoEnMs"] as? Number)?.toLong() ?: 0L
+        return MensajeGlobal(
+            id = doc.id,
+            titulo = (data["titulo"] as? String).orEmpty(),
+            mensaje = (data["mensaje"] as? String).orEmpty(),
+            prioridad = (data["prioridad"] as? String).orEmpty().ifBlank { MensajeGlobalPrioridad.IMPORTANTE.name },
+            activo = (data["activo"] as? Boolean) ?: true,
+            autorEmail = normalizeEmail((data["autorEmail"] as? String).orEmpty()),
+            autorNombre = (data["autorNombre"] as? String).orEmpty(),
+            autorUid = (data["autorUid"] as? String).orEmpty(),
+            creadoEnMs = maxOf(rawMs, serverMs)
         )
     }
 }

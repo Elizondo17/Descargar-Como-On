@@ -201,6 +201,8 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
     val readNotificationIds by viewModel.readNotificationIds.collectAsState()
     val unreadNotificationsCount by viewModel.unreadNotificationsCount.collectAsState()
     val activePriorityBanner by viewModel.activePriorityBanner.collectAsState()
+    val mensajesGlobales by viewModel.mensajesGlobales.collectAsState()
+    val dismissedGlobalBannerIds by viewModel.dismissedGlobalBannerIds.collectAsState()
     val teamNotificationFeedback by viewModel.teamNotificationFeedback.collectAsState()
     val isLargeFont = com.example.ui.theme.LocalIsLargeFontMode.current
     val context = LocalContext.current
@@ -673,6 +675,12 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            com.example.ui.components.BannerAviso(
+                mensajes = mensajesGlobales,
+                dismissedIds = dismissedGlobalBannerIds,
+                onDismissTemporarily = { viewModel.dismissGlobalBannerTemporarily(it) }
+            )
+
             val priorityBanner = activePriorityBanner
             if (priorityBanner != null) {
                 val accentColor = when {

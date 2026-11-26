@@ -89,14 +89,30 @@ class EzoRepository(
     }
 
     suspend fun upsertUserLocally(user: UserAccount) {
-        userDao.insertUser(user)
-        if (_currentUser.value?.id == user.id || (_currentUser.value?.email?.isNotBlank() == true && _currentUser.value?.email == user.email)) {
-            _currentUser.value = user
+        val userKey = user.normalizedEmail.ifBlank { user.id }
+        val locallyCompleted = hasSeenWelcomeTutorialForUser(userKey)
+        val mergedUser = if (user.tutorialCompleted) {
+            saveHasSeenWelcomeTutorialForUser(userKey, true)
+            user
+        } else if (locallyCompleted) {
+            user.copy(tutorialCompleted = true)
+        } else {
+            user
+        }
+        userDao.insertUser(mergedUser)
+        if (_currentUser.value?.id == mergedUser.id || (_currentUser.value?.email?.isNotBlank() == true && _currentUser.value?.email == mergedUser.email)) {
+            _currentUser.value = mergedUser
         }
     }
 
     suspend fun replaceCloudUsersInCache(remoteUsers: List<UserAccount>) {
         if (remoteUsers.isEmpty()) return
+        remoteUsers.forEach { user ->
+            if (user.tutorialCompleted) {
+                val userKey = user.normalizedEmail.ifBlank { user.id }
+                saveHasSeenWelcomeTutorialForUser(userKey, true)
+            }
+        }
         userDao.insertAll(remoteUsers)
     }
 
@@ -1943,6 +1959,37 @@ class EzoRepository(
 
     fun saveHasSeenWelcomeTutorial(seen: Boolean) {
         prefs?.edit()?.putBoolean("has_seen_welcome_tutorial", seen)?.apply()
+    }
+
+    fun hasSeenWelcomeTutorialForUser(userKeyRaw: String): Boolean {
+        val key = userKeyRaw.trim().lowercase()
+        if (key.isBlank()) return hasSeenWelcomeTutorial()
+        return prefs?.getBoolean("has_seen_welcome_tutorial_user_$key", false) ?: false
+    }
+
+    fun saveHasSeenWelcomeTutorialForUser(userKeyRaw: String, seen: Boolean) {
+        val key = userKeyRaw.trim().lowercase()
+        if (key.isBlank()) {
+            saveHasSeenWelcomeTutorial(seen)
+            return
+        }
+        prefs?.edit()?.putBoolean("has_seen_welcome_tutorial_user_$key", seen)?.apply()
+    }
+
+    suspend fun markWelcomeTutorialCompletedLocally(user: UserAccount, completed: Boolean) {
+        val userKey = user.normalizedEmail.ifBlank { user.id }
+        saveHasSeenWelcomeTutorialForUser(userKey, completed)
+        if (user.email.isBlank()) {
+            saveHasSeenWelcomeTutorial(completed)
+        }
+        val updated = user.copy(tutorialCompleted = completed)
+        userDao.setTutorialCompleted(user.id, completed)
+        userDao.insertUser(updated)
+        if (_currentUser.value?.id == user.id ||
+            (user.normalizedEmail.isNotBlank() && _currentUser.value?.normalizedEmail == user.normalizedEmail)
+        ) {
+            _currentUser.value = updated
+        }
     }
 
     // PSA Financing & Cuotas Persistence

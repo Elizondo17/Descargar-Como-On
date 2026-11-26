@@ -73,10 +73,70 @@ data class SellerActivityBucket(
     val label: String = "",
     val messagesSuccess: Int = 0,
     val messagesFailed: Int = 0,
-    val callsCount: Int = 0
+    val callsCount: Int = 0,
+    val appointmentsCount: Int = 0,
+    val demosCount: Int = 0
 ) {
     val totalEvents: Int
-        get() = messagesSuccess + messagesFailed + callsCount
+        get() = messagesSuccess + messagesFailed + callsCount + appointmentsCount + demosCount
+}
+
+enum class TeamNotificationType(val label: String) {
+    APP_UPDATE("Actualización de App"),
+    SUPERUSER_GLOBAL("Aviso Global Admin"),
+    SUPERUSER_DIRECT("Aviso Directo Admin"),
+    LEADER_COACHING("Mensaje de Equipo")
+}
+
+enum class TeamNotificationPriority(val label: String) {
+    INFO("Informativo"),
+    IMPORTANT("Importante"),
+    URGENT("Urgente")
+}
+
+enum class TeamNotificationTargetMode {
+    ALL,
+    USER
+}
+
+@Keep
+@IgnoreExtraProperties
+data class TeamNotification(
+    @DocumentId
+    val id: String = "",
+    val type: String = TeamNotificationType.SUPERUSER_GLOBAL.name,
+    val priority: String = TeamNotificationPriority.INFO.name,
+    val targetMode: String = TeamNotificationTargetMode.ALL.name,
+    val targetEmail: String = "",
+    val senderEmail: String = "",
+    val senderName: String = "",
+    val senderUid: String = "",
+    val title: String = "",
+    val body: String = "",
+    val actionUrl: String = "",
+    val requiredVersionCode: Int = 0,
+    val createdAtMs: Long = 0L
+) {
+    val parsedType: TeamNotificationType
+        get() = try {
+            TeamNotificationType.valueOf(type)
+        } catch (_: Exception) {
+            TeamNotificationType.SUPERUSER_GLOBAL
+        }
+
+    val parsedPriority: TeamNotificationPriority
+        get() = try {
+            TeamNotificationPriority.valueOf(priority)
+        } catch (_: Exception) {
+            TeamNotificationPriority.INFO
+        }
+
+    val parsedTargetMode: TeamNotificationTargetMode
+        get() = try {
+            TeamNotificationTargetMode.valueOf(targetMode)
+        } catch (_: Exception) {
+            TeamNotificationTargetMode.ALL
+        }
 }
 
 data class HierarchyTreeNode(
@@ -399,15 +459,47 @@ object HierarchyTreeBuilder {
         deliveryTimestampsAndSuccess: List<Pair<Long, Boolean>>,
         callTimestamps: List<Long>,
         nowMs: Long = System.currentTimeMillis()
+    ): List<SellerActivityBucket> = buildActivityBuckets(
+        daysCount = 7,
+        deliveryTimestampsAndSuccess = deliveryTimestampsAndSuccess,
+        callTimestamps = callTimestamps,
+        appointmentTimestamps = emptyList(),
+        demoTimestamps = emptyList(),
+        nowMs = nowMs
+    )
+
+    fun buildLast30DaysBuckets(
+        deliveryTimestampsAndSuccess: List<Pair<Long, Boolean>>,
+        callTimestamps: List<Long>,
+        appointmentTimestamps: List<Long> = emptyList(),
+        demoTimestamps: List<Long> = emptyList(),
+        nowMs: Long = System.currentTimeMillis()
+    ): List<SellerActivityBucket> = buildActivityBuckets(
+        daysCount = 30,
+        deliveryTimestampsAndSuccess = deliveryTimestampsAndSuccess,
+        callTimestamps = callTimestamps,
+        appointmentTimestamps = appointmentTimestamps,
+        demoTimestamps = demoTimestamps,
+        nowMs = nowMs
+    )
+
+    fun buildActivityBuckets(
+        daysCount: Int = 30,
+        deliveryTimestampsAndSuccess: List<Pair<Long, Boolean>>,
+        callTimestamps: List<Long>,
+        appointmentTimestamps: List<Long> = emptyList(),
+        demoTimestamps: List<Long> = emptyList(),
+        nowMs: Long = System.currentTimeMillis()
     ): List<SellerActivityBucket> {
+        val safeDays = daysCount.coerceIn(1, 30)
         val dayFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         val labelFmt = SimpleDateFormat("dd/MM", Locale.getDefault())
         val orderedDays = mutableListOf<Pair<String, String>>()
         val cal = Calendar.getInstance().apply {
             timeInMillis = nowMs
-            add(Calendar.DAY_OF_YEAR, -6)
+            add(Calendar.DAY_OF_YEAR, -(safeDays - 1))
         }
-        repeat(7) {
+        repeat(safeDays) {
             val d = cal.time
             orderedDays.add(dayFmt.format(d) to labelFmt.format(d))
             cal.add(Calendar.DAY_OF_YEAR, 1)
@@ -434,13 +526,31 @@ object HierarchyTreeBuilder {
             }
         }
 
+        val appointmentsByDay = hashMapOf<String, Int>()
+        appointmentTimestamps.forEach { ts ->
+            if (ts > 0L) {
+                val key = dayFmt.format(Date(ts))
+                appointmentsByDay[key] = (appointmentsByDay[key] ?: 0) + 1
+            }
+        }
+
+        val demosByDay = hashMapOf<String, Int>()
+        demoTimestamps.forEach { ts ->
+            if (ts > 0L) {
+                val key = dayFmt.format(Date(ts))
+                demosByDay[key] = (demosByDay[key] ?: 0) + 1
+            }
+        }
+
         return orderedDays.map { (dayKey, label) ->
             SellerActivityBucket(
                 dayKey = dayKey,
                 label = label,
                 messagesSuccess = successByDay[dayKey] ?: 0,
                 messagesFailed = failedByDay[dayKey] ?: 0,
-                callsCount = callsByDay[dayKey] ?: 0
+                callsCount = callsByDay[dayKey] ?: 0,
+                appointmentsCount = appointmentsByDay[dayKey] ?: 0,
+                demosCount = demosByDay[dayKey] ?: 0
             )
         }
     }
@@ -448,16 +558,18 @@ object HierarchyTreeBuilder {
     fun serializeActivityBuckets(buckets: List<SellerActivityBucket>): String {
         return try {
             val arr = JSONArray()
-            buckets.takeLast(7).forEach { b ->
+            buckets.takeLast(30).forEach { b ->
                 val obj = JSONObject()
                 obj.put("d", b.dayKey)
                 obj.put("l", b.label)
                 obj.put("ok", b.messagesSuccess)
                 obj.put("fail", b.messagesFailed)
                 obj.put("call", b.callsCount)
+                obj.put("cita", b.appointmentsCount)
+                obj.put("demo", b.demosCount)
                 arr.put(obj)
             }
-            arr.toString().take(2000)
+            arr.toString().take(9500)
         } catch (_: Exception) {
             "[]"
         }
@@ -476,7 +588,9 @@ object HierarchyTreeBuilder {
                         label = obj.optString("l"),
                         messagesSuccess = obj.optInt("ok", 0),
                         messagesFailed = obj.optInt("fail", 0),
-                        callsCount = obj.optInt("call", 0)
+                        callsCount = obj.optInt("call", 0),
+                        appointmentsCount = obj.optInt("cita", 0),
+                        demosCount = obj.optInt("demo", 0)
                     )
                 )
             }
@@ -484,5 +598,16 @@ object HierarchyTreeBuilder {
         } catch (_: Exception) {
             emptyList()
         }
+    }
+
+    fun findBucketForDate(
+        stats: SellerPerformanceStats?,
+        dateKey: String
+    ): SellerActivityBucket {
+        if (stats == null || dateKey.isBlank()) {
+            return SellerActivityBucket(dayKey = dateKey)
+        }
+        return stats.parsedRecentBuckets.firstOrNull { it.dayKey == dateKey }
+            ?: SellerActivityBucket(dayKey = dateKey)
     }
 }

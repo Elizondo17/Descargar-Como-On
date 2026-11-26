@@ -659,3 +659,22 @@ data class AgendaSyncStatus(
     val lastSyncedAtMs: Long = 0L,
     val lastErrorMessage: String? = null
 )
+
+@Entity(tableName = "psa_call_reminders")
+data class CallReminderEntity(
+    @PrimaryKey
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val title: String,
+    val triggerAtMs: Long,
+    val note: String = "",
+    val isEnabled: Boolean = true,
+    val isAutoPeakRecommendation: Boolean = false,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "read_notification_ids")
+data class ReadNotificationEntity(
+    @PrimaryKey
+    val notifId: String,
+    val readAtMs: Long = System.currentTimeMillis()
+)

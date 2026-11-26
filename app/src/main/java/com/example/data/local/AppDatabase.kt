@@ -7,8 +7,10 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.model.BusinessProfile
+import com.example.data.model.CallReminderEntity
 import com.example.data.model.DeliveryLog
 import com.example.data.model.PendingAgendaSyncEntity
+import com.example.data.model.ReadNotificationEntity
 import com.example.data.model.ScriptFolder
 import com.example.data.model.ScriptItem
 import com.example.data.model.ScannedChat
@@ -30,9 +32,11 @@ import com.example.data.model.UserToken
         com.example.data.model.PsaContactLead::class,
         com.example.data.model.PsaContactInteraction::class,
         com.example.data.model.PsaPostSaleInstallation::class,
-        PendingAgendaSyncEntity::class
+        PendingAgendaSyncEntity::class,
+        CallReminderEntity::class,
+        ReadNotificationEntity::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -48,6 +52,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun psaContactDao(): PsaContactDao
     abstract fun psaPostSaleDao(): PsaPostSaleDao
     abstract fun agendaSyncDao(): AgendaSyncDao
+    abstract fun callReminderDao(): CallReminderDao
+    abstract fun readNotificationDao(): ReadNotificationDao
     fun taskLogDao(): DeliveryLogDao = deliveryLogDao()
 
     companion object {
@@ -70,6 +76,32 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `psa_call_reminders` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `title` TEXT NOT NULL,
+                        `triggerAtMs` INTEGER NOT NULL,
+                        `note` TEXT NOT NULL,
+                        `isEnabled` INTEGER NOT NULL,
+                        `isAutoPeakRecommendation` INTEGER NOT NULL,
+                        `createdAtMs` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `read_notification_ids` (
+                        `notifId` TEXT NOT NULL PRIMARY KEY,
+                        `readAtMs` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -80,7 +112,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ezocrm_database.db"
                 )
-                    .addMigrations(MIGRATION_15_16)
+                    .addMigrations(MIGRATION_15_16, MIGRATION_16_17)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

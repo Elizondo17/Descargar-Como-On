@@ -323,6 +323,8 @@ class AgendaOfflineSyncTest {
         )
         rawDb.use { sqlite ->
             sqlite.execSQL("DROP TABLE IF EXISTS `pending_agenda_sync`")
+            sqlite.execSQL("DROP TABLE IF EXISTS `psa_call_reminders`")
+            sqlite.execSQL("DROP TABLE IF EXISTS `read_notification_ids`")
             sqlite.execSQL(
                 """
                 INSERT INTO `psa_home_visits` (
@@ -345,7 +347,7 @@ class AgendaOfflineSyncTest {
         }
 
         val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_15_16)
+            .addMigrations(AppDatabase.MIGRATION_15_16, AppDatabase.MIGRATION_16_17)
             .allowMainThreadQueries()
             .build()
         try {

@@ -108,7 +108,12 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.BusinessPreset
 import com.example.data.model.BusinessProfile
 import com.example.data.model.RoleVisibilityConfig
+import com.example.data.model.TeamNotificationPriority
+import com.example.data.model.TeamNotificationTargetMode
 import com.example.data.model.UserAccount
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import com.example.ui.theme.AmberDelay
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IndigoPrimary
@@ -175,6 +180,7 @@ fun SuperuserScreen(
     val isRefreshingAccessTokens by viewModel.isRefreshingAccessTokens.collectAsState()
     val accessTokenActionFeedback by viewModel.accessTokenActionFeedback.collectAsState()
     val adminUserActionFeedback by viewModel.adminUserActionFeedback.collectAsState()
+    val teamNotificationFeedback by viewModel.teamNotificationFeedback.collectAsState()
     val businessProfile by viewModel.businessProfile.collectAsState()
     val allScannedChats by viewModel.allScannedChats.collectAsState()
     val isGlobalLegacyEnabled by viewModel.isGlobalLegacyEnabled.collectAsState()
@@ -231,6 +237,14 @@ fun SuperuserScreen(
         if (!msg.isNullOrBlank()) {
             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             viewModel.clearAdminUserActionFeedback()
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(teamNotificationFeedback) {
+        val msg = teamNotificationFeedback
+        if (!msg.isNullOrBlank()) {
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            viewModel.clearTeamNotificationFeedback()
         }
     }
 
@@ -1629,6 +1643,238 @@ fun SuperuserScreen(
                 }
             }
 
+            // Superuser Global & Individual Notification Sender
+            item {
+                var isAnnounceExpanded by remember { mutableStateOf(false) }
+                var announceTargetMode by remember { mutableStateOf(TeamNotificationTargetMode.ALL) }
+                var announceTargetEmail by remember { mutableStateOf("") }
+                var announcePriority by remember { mutableStateOf(TeamNotificationPriority.IMPORTANT) }
+                var announceTitle by remember { mutableStateOf("") }
+                var announceBody by remember { mutableStateOf("") }
+                var sellerPickerExpanded by remember { mutableStateOf(false) }
+                val candidateSellers = remember(secondaryUsers) {
+                    secondaryUsers.filter { it.email.isNotBlank() }.sortedBy { it.username.lowercase() }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SlateCard)
+                        .border(1.dp, com.example.ui.theme.PsaCyanPrimary.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                        .padding(14.dp)
+                        .testTag("admin_send_announcement_card"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { isAnnounceExpanded = !isAnnounceExpanded },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.NotificationsActive,
+                                contentDescription = null,
+                                tint = com.example.ui.theme.PsaCyanGlow,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "📢 Enviar Aviso / Banner al Equipo",
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                Text(
+                                    text = "Muestra banner en pantalla, campanita y notificación del teléfono",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = if (isAnnounceExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (isAnnounceExpanded) "Contraer avisos" else "Expandir avisos",
+                            tint = TextSecondary
+                        )
+                    }
+
+                    AnimatedVisibility(visible = isAnnounceExpanded) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                FilterChip(
+                                    selected = announceTargetMode == TeamNotificationTargetMode.ALL,
+                                    onClick = { announceTargetMode = TeamNotificationTargetMode.ALL },
+                                    label = { Text("🌐 Global (Todos)", fontSize = 11.5.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = com.example.ui.theme.PsaCyanPrimary,
+                                        selectedLabelColor = Color.Black
+                                    )
+                                )
+                                FilterChip(
+                                    selected = announceTargetMode == TeamNotificationTargetMode.USER,
+                                    onClick = { announceTargetMode = TeamNotificationTargetMode.USER },
+                                    label = { Text("👤 Individual (1 vendedor)", fontSize = 11.5.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = PurpleNeon,
+                                        selectedLabelColor = Color.White
+                                    )
+                                )
+                            }
+
+                            if (announceTargetMode == TeamNotificationTargetMode.USER) {
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    OutlinedButton(
+                                        onClick = { sellerPickerExpanded = true },
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        val selectedSeller = candidateSellers.firstOrNull {
+                                            it.email.equals(announceTargetEmail, ignoreCase = true)
+                                        }
+                                        Text(
+                                            text = if (selectedSeller != null) {
+                                                "Para: ${selectedSeller.username} (${selectedSeller.email})"
+                                            } else {
+                                                "Seleccionar vendedor..."
+                                            },
+                                            color = TextPrimary,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = sellerPickerExpanded,
+                                        onDismissRequest = { sellerPickerExpanded = false },
+                                        modifier = Modifier.background(SlateCard)
+                                    ) {
+                                        candidateSellers.forEach { seller ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = "${seller.username} (${seller.email})",
+                                                        color = TextPrimary,
+                                                        fontSize = 12.sp
+                                                    )
+                                                },
+                                                onClick = {
+                                                    announceTargetEmail = seller.email
+                                                    sellerPickerExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                TeamNotificationPriority.entries.forEach { prio ->
+                                    val prioColor = when (prio) {
+                                        TeamNotificationPriority.URGENT -> RoseError
+                                        TeamNotificationPriority.IMPORTANT -> AmberDelay
+                                        TeamNotificationPriority.INFO -> IndigoPrimary
+                                    }
+                                    FilterChip(
+                                        selected = announcePriority == prio,
+                                        onClick = { announcePriority = prio },
+                                        label = { Text(prio.label, fontSize = 11.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = prioColor,
+                                            selectedLabelColor = if (prio == TeamNotificationPriority.IMPORTANT) Color.Black else Color.White
+                                        )
+                                    )
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = announceTitle,
+                                onValueChange = { announceTitle = it },
+                                label = { Text("Título del aviso", fontSize = 12.sp) },
+                                placeholder = { Text("Ej: Meta semanal o Aviso importante", fontSize = 11.5.sp) },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = com.example.ui.theme.PsaCyanGlow,
+                                    unfocusedBorderColor = SlateCardBorder,
+                                    focusedTextColor = TextPrimary,
+                                    unfocusedTextColor = TextPrimary
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("admin_announce_title_input")
+                            )
+
+                            OutlinedTextField(
+                                value = announceBody,
+                                onValueChange = { announceBody = it },
+                                label = { Text("Mensaje", fontSize = 12.sp) },
+                                placeholder = { Text("Escribe el aviso que verán como banner y notificación...", fontSize = 11.5.sp) },
+                                maxLines = 4,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = com.example.ui.theme.PsaCyanGlow,
+                                    unfocusedBorderColor = SlateCardBorder,
+                                    focusedTextColor = TextPrimary,
+                                    unfocusedTextColor = TextPrimary
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("admin_announce_body_input")
+                            )
+
+                            Button(
+                                onClick = {
+                                    if (announceTargetMode == TeamNotificationTargetMode.USER && announceTargetEmail.isBlank()) {
+                                        Toast.makeText(context, "Selecciona un vendedor destinatario.", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    viewModel.sendSuperuserNotification(
+                                        targetMode = announceTargetMode,
+                                        targetEmail = announceTargetEmail,
+                                        priority = announcePriority,
+                                        title = announceTitle,
+                                        body = announceBody
+                                    )
+                                    announceTitle = ""
+                                    announceBody = ""
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = com.example.ui.theme.PsaCyanPrimary),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("admin_btn_send_announcement")
+                            ) {
+                                Icon(Icons.Default.Send, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (announceTargetMode == TeamNotificationTargetMode.ALL) {
+                                        "Enviar Aviso Global"
+                                    } else {
+                                        "Enviar Aviso Individual"
+                                    },
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.5.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Master Control for Legacy vs Exclusive PSA
             item {
                 Box(
@@ -1928,9 +2174,8 @@ fun SuperuserScreen(
                             Spacer(modifier = Modifier.height(8.dp))
 
                             // Temporary Update-Required Lock Control (Auto-unlocks on new APK OR Manual Admin Re-enable)
-                            val targetReqCode = serverAppUpdateInfo?.latestVersionCode
-                                ?.takeIf { it > 0 }
-                                ?: (com.example.BuildConfig.VERSION_CODE + 1)
+                            val serverVer = serverAppUpdateInfo?.latestVersionCode ?: 0
+                            val targetReqCode = maxOf(serverVer, com.example.BuildConfig.VERSION_CODE + 1)
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1972,7 +2217,7 @@ fun SuperuserScreen(
                                         text = if (user.updateRequired) {
                                             "Se habilitará solo al abrir la versión nueva o si lo habilitas aquí."
                                         } else {
-                                            "Pausa temporalmente al vendedor con el link de descarga."
+                                            "Bloquea al vendedor hasta que instale Comp. >= $targetReqCode."
                                         },
                                         color = TextSecondary,
                                         fontSize = 10.sp
@@ -4110,7 +4355,7 @@ fun LazyListScope.roleMatrixTab(
 
                 RoleToggleCard(
                     title = "⚡ Automatización Masiva CRM",
-                    description = "Envío automatizado de mensajes en segundo plano con accesibilidad.",
+                    description = "Envío de campañas CRM (solo visible para Superusuario).",
                     checked = roleMatrix.opAutomationEnabled,
                     onCheckedChange = { onSaveMatrix(roleMatrix.copy(opAutomationEnabled = it)) }
                 )

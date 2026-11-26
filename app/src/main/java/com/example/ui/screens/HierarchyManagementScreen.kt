@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,7 +34,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
@@ -75,12 +78,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 import com.example.data.model.FlattenedTreeRow
 import com.example.data.model.HierarchyRequest
 import com.example.data.model.HierarchyRequestStatus
@@ -140,6 +147,30 @@ fun HierarchyManagementScreen(
     }
     val statsByEmail = remember(visibleStats) {
         visibleStats.associateBy { it.sellerEmail.trim().lowercase() }
+    }
+
+    val context = LocalContext.current
+    val dayKeyFmt = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US) }
+    val dayDisplayFmt = remember { SimpleDateFormat("dd/MM", Locale.getDefault()) }
+    val last30DayOptions = remember {
+        val list = mutableListOf<Pair<String, String>>()
+        val cal = Calendar.getInstance()
+        for (offset in 0 until 30) {
+            val d = cal.time
+            val key = dayKeyFmt.format(d)
+            val label = when (offset) {
+                0 -> "Hoy"
+                1 -> "Ayer"
+                else -> dayDisplayFmt.format(d)
+            }
+            list.add(key to label)
+            cal.add(Calendar.DAY_OF_YEAR, -1)
+        }
+        list
+    }
+    var selectedDateKey by remember { mutableStateOf(last30DayOptions.first().first) }
+    val selectedDateLabel = remember(selectedDateKey, last30DayOptions) {
+        last30DayOptions.firstOrNull { it.first == selectedDateKey }?.second ?: selectedDateKey
     }
 
     var searchQuery by remember { mutableStateOf("") }
@@ -240,7 +271,7 @@ fun HierarchyManagementScreen(
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (isSuperuser) "Estructura Piramidal" else "Mi Equipo y Coaching",
+                        text = if (isSuperuser) "Gestión de Equipo" else "Mi Equipo y Coaching",
                         color = TextPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
@@ -248,7 +279,7 @@ fun HierarchyManagementScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                     val depthSummary = when {
-                        isSuperuser -> "${allUsers.count { it.role != "SUPERUSER" }} cuenta(s) en árbol"
+                        isSuperuser -> "${allUsers.count { it.role != "SUPERUSER" }} cuenta(s) en equipo"
                         viewer.visibilityDepth <= 0 -> "${visibleUsers.size} sub-usuario(s) • Toda tu rama"
                         else -> "${visibleUsers.size} sub-usuario(s) • Hasta ${viewer.visibilityDepth} nivel(es)"
                     }
@@ -364,7 +395,7 @@ fun HierarchyManagementScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = if (isSuperuser) {
-                                    "Control Total de la Pirámide"
+                                    "Control Total del Equipo"
                                 } else if (viewer.canManageSubUsers) {
                                     "Gestión de Sub-Usuarios Habilitada"
                                 } else {
@@ -533,6 +564,128 @@ fun HierarchyManagementScreen(
                 }
             }
 
+            // 30-day Day Selector + Team Daily Totals Card
+            item {
+                val teamDayStatsList = remember(filteredRows) {
+                    filteredRows.mapNotNull { it.node.stats }
+                        .distinctBy { it.sellerEmail.trim().lowercase() }
+                }
+                val dayMsgsOk = remember(teamDayStatsList, selectedDateKey) {
+                    teamDayStatsList.sumOf { HierarchyTreeBuilder.findBucketForDate(it, selectedDateKey).messagesSuccess }
+                }
+                val dayMsgsFail = remember(teamDayStatsList, selectedDateKey) {
+                    teamDayStatsList.sumOf { HierarchyTreeBuilder.findBucketForDate(it, selectedDateKey).messagesFailed }
+                }
+                val dayCalls = remember(teamDayStatsList, selectedDateKey) {
+                    teamDayStatsList.sumOf { HierarchyTreeBuilder.findBucketForDate(it, selectedDateKey).callsCount }
+                }
+                val dayAppointments = remember(teamDayStatsList, selectedDateKey) {
+                    teamDayStatsList.sumOf { HierarchyTreeBuilder.findBucketForDate(it, selectedDateKey).appointmentsCount }
+                }
+                val dayDemos = remember(teamDayStatsList, selectedDateKey) {
+                    teamDayStatsList.sumOf { HierarchyTreeBuilder.findBucketForDate(it, selectedDateKey).demosCount }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(SlateCard)
+                        .border(1.dp, PsaCyanPrimary.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                        .padding(12.dp)
+                        .testTag("team_daily_summary_card"),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "📅 Gestiones y Citas • $selectedDateLabel",
+                            color = PsaCyanGlow,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.5.sp
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                val cal = Calendar.getInstance()
+                                runCatching {
+                                    dayKeyFmt.parse(selectedDateKey)?.let { cal.time = it }
+                                }
+                                val dialog = android.app.DatePickerDialog(
+                                    context,
+                                    { _, year, month, dayOfMonth ->
+                                        val picked = Calendar.getInstance().apply {
+                                            set(year, month, dayOfMonth, 12, 0, 0)
+                                        }
+                                        selectedDateKey = dayKeyFmt.format(picked.time)
+                                    },
+                                    cal.get(Calendar.YEAR),
+                                    cal.get(Calendar.MONTH),
+                                    cal.get(Calendar.DAY_OF_MONTH)
+                                )
+                                val nowMs = System.currentTimeMillis()
+                                dialog.datePicker.maxDate = nowMs
+                                dialog.datePicker.minDate = nowMs - (29L * 24L * 60L * 60L * 1000L)
+                                dialog.show()
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .heightIn(min = 36.dp)
+                                .testTag("team_pick_date_button")
+                        ) {
+                            Icon(Icons.Default.CalendarMonth, contentDescription = null, tint = PsaCyanGlow, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Elegir fecha", color = PsaCyanGlow, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        last30DayOptions.take(7).forEach { (key, label) ->
+                            FilterChip(
+                                selected = selectedDateKey == key,
+                                onClick = { selectedDateKey = key },
+                                label = { Text(label, fontSize = 11.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = PsaCyanPrimary,
+                                    selectedLabelColor = Color.Black,
+                                    containerColor = SlateBackground,
+                                    labelColor = TextSecondary
+                                )
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = SlateBackground,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, SlateCardBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        FlowRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("✉️ $dayMsgsOk ok / $dayMsgsFail fail", color = TextPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                            Text("📞 $dayCalls llam.", color = PsaCyanGlow, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                            Text("📅 $dayAppointments citas", color = EmeraldSuccess, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                            Text("🧪 $dayDemos demos", color = AmberDelay, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+
             if (isBusy) {
                 item {
                     Row(
@@ -594,6 +747,8 @@ fun HierarchyManagementScreen(
                 ) { row ->
                     HierarchyTreeRowCard(
                         row = row,
+                        selectedDateKey = selectedDateKey,
+                        selectedDateLabel = selectedDateLabel,
                         isSuperuserViewer = isSuperuser,
                         isBusy = isBusy,
                         onToggleExpand = {
@@ -689,12 +844,17 @@ fun HierarchyManagementScreen(
         )
     }
 
-    // Coaching & Detailed Metrics Modal (calls + messaging + 7-day breakdown)
+    // Coaching & Detailed Metrics Modal (calls + messaging + 30-day breakdown + coaching message)
     val coachingTarget = coachingDialogTarget
     if (coachingTarget != null) {
         SellerCoachingDetailDialog(
             user = coachingTarget.first,
             stats = coachingTarget.second,
+            selectedDateKey = selectedDateKey,
+            selectedDateLabel = selectedDateLabel,
+            onSendCoachingMessage = { email, title, body ->
+                viewModel.sendLeaderCoachingMessage(targetEmail = email, title = title, body = body)
+            },
             onDismiss = { coachingDialogTarget = null }
         )
     }
@@ -704,6 +864,8 @@ fun HierarchyManagementScreen(
 @Composable
 private fun HierarchyTreeRowCard(
     row: FlattenedTreeRow,
+    selectedDateKey: String,
+    selectedDateLabel: String,
     isSuperuserViewer: Boolean,
     isBusy: Boolean,
     onToggleExpand: () -> Unit,
@@ -857,36 +1019,58 @@ private fun HierarchyTreeRowCard(
                 }
             }
 
-            // Seller Calls & Messaging Snapshot
+            // Seller Selected-Day & Total Calls / Appointments / Messaging Snapshot
+            val dayBucket = HierarchyTreeBuilder.findBucketForDate(stats, selectedDateKey)
             Surface(
                 color = SlateBackground.copy(alpha = 0.7f),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                FlowRow(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 10.dp, vertical = 7.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "$selectedDateLabel: ✉️ ${dayBucket.messagesSuccess} • 📞 ${dayBucket.callsCount}",
+                            color = TextPrimary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "📅 ${dayBucket.appointmentsCount} citas • 🧪 ${dayBucket.demosCount} demos",
+                            color = EmeraldSuccess,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                     val ok = stats?.messagesSuccess ?: 0
                     val fail = stats?.messagesFailed ?: 0
                     val rate = stats?.messagingSuccessRate ?: 0f
                     val callsOk = stats?.callsConnected ?: 0
                     val callsTot = stats?.callsAttempted ?: 0
-                    Text(
-                        text = "✉️ $ok ok / $fail fallos (${"%.0f".format(rate)}%)",
-                        color = if (fail > ok && fail > 0) RoseError else TextSecondary,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "📞 $callsOk/$callsTot llamadas",
-                        color = PsaCyanGlow,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Medium
-                    )
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Acumulado: ✉️ $ok ok / $fail fail (${"%.0f".format(rate)}%)",
+                            color = if (fail > ok && fail > 0) RoseError else TextMuted,
+                            fontSize = 10.5.sp
+                        )
+                        Text(
+                            text = "📞 $callsOk/$callsTot llam.",
+                            color = PsaCyanGlow,
+                            fontSize = 10.5.sp
+                        )
+                    }
                 }
             }
 
@@ -1306,7 +1490,7 @@ private fun ApproveHierarchyRequestDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = "Habilitar Cuenta en Pirámide",
+                text = "Habilitar Cuenta en el Equipo",
                 color = TextPrimary,
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp
@@ -1370,7 +1554,7 @@ private fun ApproveHierarchyRequestDialog(
                 AnimatedVisibility(visible = allowSub) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Alcance de visualización en la pirámide:",
+                            text = "Alcance de visualización en el equipo:",
                             color = TextSecondary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
@@ -1648,6 +1832,9 @@ private fun ParentCandidateRow(
 fun SellerCoachingDetailDialog(
     user: UserAccount?,
     stats: SellerPerformanceStats?,
+    selectedDateKey: String = "",
+    selectedDateLabel: String = "Hoy",
+    onSendCoachingMessage: (targetEmail: String, title: String, body: String) -> Unit = { _, _, _ -> },
     onDismiss: () -> Unit
 ) {
     val name = user?.username?.ifBlank { stats?.sellerName } ?: stats?.sellerName ?: "Vendedor"
@@ -1660,6 +1847,11 @@ fun SellerCoachingDetailDialog(
     val callsConnected = stats?.callsConnected ?: 0
     val callRate = stats?.callConnectionRate ?: 0f
     val buckets = stats?.parsedRecentBuckets.orEmpty()
+    val selectedDayBucket = HierarchyTreeBuilder.findBucketForDate(stats, selectedDateKey)
+
+    var coachTitle by remember { mutableStateOf("") }
+    var coachBody by remember { mutableStateOf("") }
+    var sentMessageConfirmation by remember { mutableStateOf(false) }
 
     val recommendations = buildList {
         if (msgTotal > 0 && msgRate < 75f) {
@@ -1700,6 +1892,28 @@ fun SellerCoachingDetailDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                if (selectedDateKey.isNotBlank()) {
+                    Surface(
+                        color = PsaCyanPrimary.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("Gestiones del día ($selectedDateLabel)", color = PsaCyanGlow, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text("✉️ ${selectedDayBucket.messagesSuccess} ok / ${selectedDayBucket.messagesFailed} fallos", color = TextPrimary, fontSize = 12.sp)
+                                Text("📞 ${selectedDayBucket.callsCount} llam.", color = PsaCyanGlow, fontSize = 12.sp)
+                                Text("📅 ${selectedDayBucket.appointmentsCount} citas", color = EmeraldSuccess, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text("🧪 ${selectedDayBucket.demosCount} demos", color = AmberDelay, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
                 Surface(
                     color = SlateBackground,
                     shape = RoundedCornerShape(12.dp),
@@ -1754,17 +1968,17 @@ fun SellerCoachingDetailDialog(
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text("Últimos 7 días", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
-                            buckets.filter { it.totalEvents > 0 }.forEach { b ->
+                            Text("Historial diario (últimos 30 días)", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                            buckets.filter { it.totalEvents > 0 }.reversed().take(15).forEach { b ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text(b.label.ifBlank { b.dayKey }, color = TextSecondary, fontSize = 11.5.sp)
+                                    Text(b.label.ifBlank { b.dayKey }, color = TextSecondary, fontSize = 11.sp)
                                     Text(
-                                        "${b.messagesSuccess} ok • ${b.messagesFailed} fallos • ${b.callsCount} llam.",
+                                        "✉️ ${b.messagesSuccess} • 📞 ${b.callsCount} • 📅 ${b.appointmentsCount} • 🧪 ${b.demosCount}",
                                         color = TextPrimary,
-                                        fontSize = 11.5.sp
+                                        fontSize = 11.sp
                                     )
                                 }
                             }
@@ -1785,6 +1999,87 @@ fun SellerCoachingDetailDialog(
                         Text("💡 Orientación Sugerida", color = AmberDelay, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                         recommendations.forEach { tip ->
                             Text(text = tip, color = TextPrimary, fontSize = 11.5.sp, lineHeight = 16.sp)
+                        }
+                    }
+                }
+
+                if (email.isNotBlank()) {
+                    Surface(
+                        color = IndigoPrimary.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, IndigoPrimary.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "💬 Enviar Mensaje / Incentivo al Vendedor",
+                                color = IndigoPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.5.sp
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(
+                                    "¡Vamos hoy!" to "¡No bajes los brazos! Con una tanda de 10 llamadas hoy sumás citas seguras.",
+                                    "Tip horario" to "Probá hacer tu bloque principal entre las 18:00 y 20:30, suele tener mejor respuesta.",
+                                    "Enfoque demos" to "Excelente movimiento, enfocate ahora en confirmar horario de visita en cada respuesta."
+                                ).forEach { (chipLabel, presetText) ->
+                                    FilterChip(
+                                        selected = coachBody == presetText,
+                                        onClick = {
+                                            coachTitle = chipLabel
+                                            coachBody = presetText
+                                            sentMessageConfirmation = false
+                                        },
+                                        label = { Text(chipLabel, fontSize = 11.sp) }
+                                    )
+                                }
+                            }
+                            OutlinedTextField(
+                                value = coachTitle,
+                                onValueChange = { coachTitle = it; sentMessageConfirmation = false },
+                                label = { Text("Título (opcional)", fontSize = 11.5.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = coachBody,
+                                onValueChange = { coachBody = it; sentMessageConfirmation = false },
+                                label = { Text("Mensaje o consejo para $name", fontSize = 11.5.sp) },
+                                maxLines = 3,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Button(
+                                onClick = {
+                                    onSendCoachingMessage(email, coachTitle, coachBody)
+                                    coachTitle = ""
+                                    coachBody = ""
+                                    sentMessageConfirmation = true
+                                },
+                                enabled = coachBody.isNotBlank(),
+                                colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 44.dp)
+                                    .testTag("btn_send_leader_coaching_msg")
+                            ) {
+                                Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Enviar Mensaje", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                            if (sentMessageConfirmation) {
+                                Text(
+                                    text = "✅ Mensaje enviado como banner y notificación al vendedor.",
+                                    color = EmeraldSuccess,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
                     }
                 }

@@ -1,8 +1,10 @@
 package com.example.ui.screens.psa
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,9 +36,12 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Settings
@@ -52,6 +57,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,6 +91,7 @@ fun PsaToolsDrawerSheet(
     onSelectTab: (PsaWorkspaceTab) -> Unit,
     onOpenAdvisorQuiz: () -> Unit,
     onOpenHelpGuide: () -> Unit,
+    onOpenWelcomeTutorial: () -> Unit = {},
     onOpenPricingSettings: () -> Unit = {},
     onOpenDipPortal: () -> Unit = {},
     showDashboardNav: Boolean = false,
@@ -203,16 +213,6 @@ fun PsaToolsDrawerSheet(
             )
 
             PsaDrawerItemRow(
-                label = "Stock",
-                subtitle = "Equipos y repuestos",
-                icon = Icons.Default.Inventory2,
-                selected = activeTab == PsaWorkspaceTab.STOCK,
-                accentColor = PsaCyanGlow,
-                testTag = "psa_drawer_item_stock",
-                onClick = { onSelectTab(PsaWorkspaceTab.STOCK) }
-            )
-
-            PsaDrawerItemRow(
                 label = "Contactos",
                 subtitle = "Seguimiento de clientes",
                 icon = Icons.Default.Contacts,
@@ -267,6 +267,16 @@ fun PsaToolsDrawerSheet(
                 accentColor = TextSecondary,
                 testTag = "psa_drawer_item_help_guide",
                 onClick = onOpenHelpGuide
+            )
+
+            PsaDrawerItemRow(
+                label = "Tutorial de Bienvenida",
+                subtitle = "Demo de agua y Cotizador",
+                icon = Icons.Default.PlayCircleOutline,
+                selected = false,
+                accentColor = PsaCyanGlow,
+                testTag = "psa_drawer_item_welcome_tutorial",
+                onClick = onOpenWelcomeTutorial
             )
 
             HorizontalDivider(
@@ -351,6 +361,51 @@ fun PsaToolsDrawerSheet(
                         onClick = { onNavigateAppTab(AppTab.AUTOMATION) }
                     )
                 }
+            }
+
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 6.dp),
+                color = SlateCardBorder.copy(alpha = 0.65f)
+            )
+
+            var moreToolsExpanded by remember(activeTab) {
+                mutableStateOf(activeTab == PsaWorkspaceTab.STOCK)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { moreToolsExpanded = !moreToolsExpanded }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .testTag("psa_drawer_more_tools_toggle"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "MÁS HERRAMIENTAS",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.8.sp
+                )
+                Icon(
+                    imageVector = if (moreToolsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (moreToolsExpanded) "Ocultar más herramientas" else "Mostrar más herramientas",
+                    tint = TextMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            AnimatedVisibility(visible = moreToolsExpanded) {
+                PsaDrawerItemRow(
+                    label = "Stock",
+                    subtitle = "Equipos y repuestos",
+                    icon = Icons.Default.Inventory2,
+                    selected = activeTab == PsaWorkspaceTab.STOCK,
+                    accentColor = PsaCyanGlow,
+                    testTag = "psa_drawer_item_stock",
+                    onClick = { onSelectTab(PsaWorkspaceTab.STOCK) }
+                )
             }
         }
     }

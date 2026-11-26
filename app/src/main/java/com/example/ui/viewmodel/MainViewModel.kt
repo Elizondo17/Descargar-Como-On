@@ -17,9 +17,10 @@ import com.example.data.model.ScriptItem
 import com.example.data.model.UserAccount
 import com.example.data.repository.EzoRepository
 import com.example.service.AutomationManager
-import com.example.service.EzoAccessibilityService
+import com.example.service.CallReminderScheduler
 import com.example.service.NotificationHelper
 import com.example.data.model.BusinessProfile
+import com.example.data.model.CallReminderEntity
 import com.example.data.model.ChatLearningInsight
 import com.example.data.model.SalesCoachingResult
 import com.example.data.model.SmartResponseOption
@@ -34,6 +35,7 @@ import com.example.data.model.PsaContactLead
 import com.example.data.model.PsaContactInteraction
 import com.example.data.model.PsaDailyGoalStats
 import com.example.data.model.PsaAchievementBadge
+import com.example.data.model.PsaLeadStatus
 import com.example.data.model.PsaPostSaleInstallation
 import com.example.data.model.PsaPostSaleStatus
 import com.example.data.model.SellerPerformanceStats
@@ -44,6 +46,10 @@ import com.example.data.model.HierarchyRequestStatus
 import com.example.data.model.HierarchyRequestType
 import com.example.data.model.HierarchyTreeBuilder
 import com.example.data.model.SellerActivityBucket
+import com.example.data.model.TeamNotification
+import com.example.data.model.TeamNotificationPriority
+import com.example.data.model.TeamNotificationTargetMode
+import com.example.data.model.TeamNotificationType
 import com.example.data.model.calculateNextReplacementTimestamp
 import com.example.BuildConfig
 import com.example.util.AccessLockReason
@@ -53,12 +59,15 @@ import com.example.util.AppErrorReport
 import com.example.util.AppErrorStage
 import com.example.util.AppUpdateChecker
 import com.example.util.AppUpdateInfo
+import com.example.util.CallCoachingInsight
+import com.example.util.CallTimingAnalysis
 import com.example.util.FirebaseAppDistributionHelper
 import com.example.util.FirebaseAppDistributionOutcome
 import com.example.util.LicenseEvaluationResult
 import com.example.util.LicenseSecurityGuard
 import com.example.util.PsaAiAudience
 import com.example.util.PsaAiChatEntry
+import com.example.util.PsaCallCoachingEngine
 import com.example.util.PsaDemoAiContext
 import com.example.util.PsaInternalKnowledgeEngine
 import com.example.util.PsaKeyQuestion
@@ -78,11 +87,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -211,6 +222,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _psaAiConversation = MutableStateFlow<List<PsaAiChatEntry>>(emptyList())
     val psaAiConversation: StateFlow<List<PsaAiChatEntry>> = _psaAiConversation.asStateFlow()
 
+    private val _teamNotifications = MutableStateFlow<List<TeamNotification>>(emptyList())
+    val teamNotifications: StateFlow<List<TeamNotification>> = _teamNotifications.asStateFlow()
+
+    private val _dismissedBannerIds = MutableStateFlow<Set<String>>(emptySet())
+
+    private val _teamNotificationFeedback = MutableStateFlow<String?>(null)
+    val teamNotificationFeedback: StateFlow<String?> = _teamNotificationFeedback.asStateFlow()
+
+    private val _prePeakReminderEnabled = MutableStateFlow(repository.isPrePeakReminderEnabled())
+    val prePeakReminderEnabled: StateFlow<Boolean> = _prePeakReminderEnabled.asStateFlow()
+
     private var userListenerJob: Job? = null
     private var allUsersListenerJob: Job? = null
     private var subordinateUsersListenerJob: Job? = null
@@ -225,6 +247,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var sellerStatsListenerJob: Job? = null
     private var appErrorsListenerJob: Job? = null
     private var accessTokensListenerJob: Job? = null
+    private var teamNotificationsListenerJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var wasAutoPausedByLicenseLock: Boolean = false
     private var hasCheckedAppUpdateOnLaunch: Boolean = false
@@ -305,15 +328,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val local7DayBuckets: StateFlow<List<SellerActivityBucket>> = combine(
         allLogs,
-        allPsaInteractions
-    ) { logs, interactions ->
+        allPsaInteractions,
+        allPsaVisits,
+        allPsaLeads
+    ) { logs, interactions, visits, leads ->
         val psaMessages = interactions.filter { it.channel == "MESSAGE" }
         val messageEvents = logs.map { it.timestamp to (it.status == "SUCCESS") } +
             psaMessages.map { it.timestampMs to (it.result == "SUCCESS" || it.result == "RESCHEDULED") }
         val callEvents = interactions.filter { it.channel == "CALL" }.map { it.timestampMs }
-        HierarchyTreeBuilder.buildLast7DaysBuckets(
+        val activeVisits = visits.filter { it.status != PsaVisitStatus.CANCELADA }
+        val unmatchedLeadAppointments = leads.filter { lead ->
+            lead.status == PsaLeadStatus.APPOINTMENT_SET &&
+                activeVisits.none { v ->
+                    v.customerName.equals(lead.name, ignoreCase = true) ||
+                        (v.phone.isNotBlank() && v.phone == lead.phone)
+                }
+        }.map { it.lastContactDateMs.takeIf { ts -> ts > 0L } ?: it.createdAtMs }
+        val appointmentEvents = activeVisits.map { it.createdAtMs } + unmatchedLeadAppointments
+        val demoEvents = visits
+            .filter { it.diagnosticTimestampMs > 0L || it.chlorinePpm > 0f || it.hardnessPpm > 0 }
+            .map { it.diagnosticTimestampMs.takeIf { ts -> ts > 0L } ?: it.updatedAtMs }
+        HierarchyTreeBuilder.buildLast30DaysBuckets(
             deliveryTimestampsAndSuccess = messageEvents,
-            callTimestamps = callEvents
+            callTimestamps = callEvents,
+            appointmentTimestamps = appointmentEvents,
+            demoTimestamps = demoEvents
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -323,7 +362,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _sellerPerformanceBoard,
         allLogs,
         allPsaLeads,
-        allPsaInteractions
+        allPsaInteractions,
+        allPsaVisits
     ) { values ->
         val viewer = values[0] as? UserAccount
         @Suppress("UNCHECKED_CAST")
@@ -336,6 +376,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val leads = values[4] as List<PsaContactLead>
         @Suppress("UNCHECKED_CAST")
         val interactions = values[5] as List<PsaContactInteraction>
+        @Suppress("UNCHECKED_CAST")
+        val visits = values[6] as List<PsaHomeVisit>
 
         if (viewer == null) return@combine emptyList()
         val viewerEmail = viewer.normalizedEmail
@@ -348,21 +390,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val calls = interactions.filter { it.channel == "CALL" }
         val callsAttempted = maxOf(leads.sumOf { it.callAttemptsCount }, calls.size)
         val callsConnected = calls.count { it.result == "SUCCESS" || it.result == "RESCHEDULED" || it.result == "REJECTED" }
+        val activeVisits = visits.filter { it.status != PsaVisitStatus.CANCELADA }
+        val unmatchedLeadAppointments = leads.filter { lead ->
+            lead.status == PsaLeadStatus.APPOINTMENT_SET &&
+                activeVisits.none { v ->
+                    v.customerName.equals(lead.name, ignoreCase = true) ||
+                        (v.phone.isNotBlank() && v.phone == lead.phone)
+                }
+        }.map { it.lastContactDateMs.takeIf { ts -> ts > 0L } ?: it.createdAtMs }
+        val appointmentEvents = activeVisits.map { it.createdAtMs } + unmatchedLeadAppointments
+        val demoEvents = visits
+            .filter { it.diagnosticTimestampMs > 0L || it.chlorinePpm > 0f || it.hardnessPpm > 0 }
+            .map { it.diagnosticTimestampMs.takeIf { ts -> ts > 0L } ?: it.updatedAtMs }
         val bucketsJson = HierarchyTreeBuilder.serializeActivityBuckets(
-            HierarchyTreeBuilder.buildLast7DaysBuckets(
+            HierarchyTreeBuilder.buildLast30DaysBuckets(
                 deliveryTimestampsAndSuccess = logs.map { it.timestamp to (it.status == "SUCCESS") } +
                     psaMsg.map { it.timestampMs to (it.result == "SUCCESS" || it.result == "RESCHEDULED") },
-                callTimestamps = calls.map { it.timestampMs }
+                callTimestamps = calls.map { it.timestampMs },
+                appointmentTimestamps = appointmentEvents,
+                demoTimestamps = demoEvents
             )
         )
         val latestMsgTs = maxOf(logs.maxOfOrNull { it.timestamp } ?: 0L, psaMsg.maxOfOrNull { it.timestampMs } ?: 0L)
         val latestCallTs = calls.maxOfOrNull { it.timestampMs } ?: 0L
-        val selfLatestTs = maxOf(latestMsgTs, latestCallTs)
+        val latestVisitTs = visits.maxOfOrNull { it.updatedAtMs } ?: 0L
+        val selfLatestTs = maxOf(latestMsgTs, latestCallTs, latestVisitTs)
         val selfLocalStats = SellerPerformanceStats(
             ownerUid = viewer.ownerUid.ifBlank { viewer.id },
             sellerName = viewer.username.ifBlank { "Mi Cuenta" },
             sellerEmail = viewerEmail,
             totalContacts = leads.size,
+            totalVisits = visits.size,
+            completedDemos = demoEvents.size,
+            closedSales = visits.count { it.status == PsaVisitStatus.CERRADA_EXITO },
             messagesSuccess = deliveryOk + psaMsgOk,
             messagesFailed = deliveryFail + psaMsgFail,
             messagesTotal = deliveryOk + deliveryFail + psaMsg.size,
@@ -381,7 +441,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (viewer.role == "SUPERUSER") {
             val merged = board.toMutableList()
             if (viewerEmail.isNotBlank() && merged.none { it.sellerEmail.trim().lowercase() == viewerEmail }) {
-                if (selfLocalStats.messagesTotal > 0 || selfLocalStats.callsAttempted > 0 || selfLocalStats.totalContacts > 0) {
+                if (selfLocalStats.messagesTotal > 0 || selfLocalStats.callsAttempted > 0 || selfLocalStats.totalContacts > 0 || selfLocalStats.totalVisits > 0) {
                     merged.add(selfLocalStats)
                 }
             }
@@ -570,6 +630,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.saveHasSeenSetupGuide(dismissed)
     }
 
+    private val _hasSeenWelcomeTutorial = MutableStateFlow(repository.hasSeenWelcomeTutorial())
+    val hasSeenWelcomeTutorial: StateFlow<Boolean> = _hasSeenWelcomeTutorial.asStateFlow()
+
+    fun setWelcomeTutorialSeen(seen: Boolean) {
+        _hasSeenWelcomeTutorial.value = seen
+        repository.saveHasSeenWelcomeTutorial(seen)
+    }
+
     private val _activePsaCountry = MutableStateFlow(com.example.util.PsaPortalSyncManager.getSelectedCountry(application))
     val activePsaCountry: StateFlow<com.example.util.PsaCountryConfig> = _activePsaCountry.asStateFlow()
 
@@ -664,25 +732,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _apiKeyTestStatus = MutableStateFlow<String?>(null)
     val apiKeyTestStatus: StateFlow<String?> = _apiKeyTestStatus.asStateFlow()
 
+    val readNotificationIds: StateFlow<Set<String>> = repository.readNotificationIds
+        .map { it.toSet() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    val unreadNotificationsCount: StateFlow<Int> = combine(
+        _teamNotifications,
+        readNotificationIds
+    ) { notifications, readIds ->
+        notifications.count { it.id !in readIds }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val activePriorityBanner: StateFlow<TeamNotification?> = combine(
+        _teamNotifications,
+        readNotificationIds,
+        _dismissedBannerIds
+    ) { notifications, readIds, dismissedIds ->
+        notifications.firstOrNull { notif ->
+            notif.id !in readIds &&
+                notif.id !in dismissedIds &&
+                (notif.parsedPriority == TeamNotificationPriority.IMPORTANT ||
+                    notif.parsedPriority == TeamNotificationPriority.URGENT ||
+                    notif.parsedType == TeamNotificationType.APP_UPDATE)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val allCallReminders: StateFlow<List<CallReminderEntity>> = repository.allCallReminders
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val callTimingAnalysis: StateFlow<CallTimingAnalysis> = allPsaInteractions
+        .map { interactions -> PsaCallCoachingEngine.analyzeCallTiming(interactions) }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            PsaCallCoachingEngine.analyzeCallTiming(emptyList())
+        )
+
+    val callCoachingInsight: StateFlow<CallCoachingInsight> = combine(
+        dailyContactStats,
+        allPsaLeads,
+        allPsaVisits,
+        _psaDailyGoal
+    ) { stats, leads, visits, goal ->
+        val todayKey = stats.dateKey
+        val appointmentsToday = visits.count {
+            it.scheduledDate == todayKey && it.status != PsaVisitStatus.CANCELADA
+        }
+        val pendingQueue = leads.count {
+            it.status == PsaLeadStatus.PENDING ||
+                it.status == PsaLeadStatus.RESCHEDULED ||
+                it.status == PsaLeadStatus.INTERESTED
+        }
+        PsaCallCoachingEngine.buildAdaptiveCoaching(
+            callsToday = stats.callsCount,
+            successToday = stats.successCount,
+            appointmentsToday = appointmentsToday,
+            pendingQueueSize = pendingQueue,
+            dailyGoal = goal
+        )
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        PsaCallCoachingEngine.buildAdaptiveCoaching(0, 0)
+    )
+
     val automationProgress: StateFlow<LiveAutomationProgress> = automationManager.progress
     val automationConfig: StateFlow<AutomationConfig> = automationManager.config
-    val isAccessibilityConnected: StateFlow<Boolean> = EzoAccessibilityService.isServiceConnected
-    val isBubbleVisible: StateFlow<Boolean> = EzoAccessibilityService.isBubbleVisible
-    val isBankingMode: StateFlow<Boolean> = EzoAccessibilityService.isBankingMode
-    val isAppPaused: StateFlow<Boolean> = EzoAccessibilityService.isAppPaused
-    private val _killSwitchTriggered = MutableStateFlow(false)
-    val killSwitchTriggered: StateFlow<Boolean> = _killSwitchTriggered.asStateFlow()
-    val selectedChatsReadyCount: StateFlow<Int> = EzoAccessibilityService.selectedChatsReadyCount
-
-    val detectedCrmApp: StateFlow<String> = EzoAccessibilityService.detectedCrmApp
-    val activeCrmPackage: StateFlow<String> = EzoAccessibilityService.activeCrmPackage
-    val isCrmWindowActive: StateFlow<Boolean> = EzoAccessibilityService.isCrmWindowActive
-    val visibleChatsCount: StateFlow<Int> = EzoAccessibilityService.visibleChatsCount
-    val lastDetectedWindowTitle: StateFlow<String> = EzoAccessibilityService.lastDetectedWindowTitle
-    val activeCrmFolder: StateFlow<String> = EzoAccessibilityService.activeCrmFolder
-
-    val scannedCrmFolders = EzoAccessibilityService.scannedFolders
-    val scannedCrmChats = EzoAccessibilityService.scannedChats
 
     init {
         val securityPrefs = application.getSharedPreferences("app_security_prefs", Context.MODE_PRIVATE)
@@ -718,12 +833,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 evaluateLicenseNow()
             }
         )
-        viewModelScope.launch {
-            selectedScannedChats.collect { selected ->
-                val readyCount = selected.count { !it.isSent }
-                EzoAccessibilityService.updateSelectedChatsCount(readyCount)
-            }
-        }
         // Continuous Cloud Sync for multi-device sync, instant block, added days, and alerts
         CloudSyncRepository.getInstance(application).startContinuousSync(
             scope = viewModelScope,
@@ -826,10 +935,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun shutdownBackgroundServicesOnLock() {
-        val ctx = getApplication<Application>()
         automationManager.stopCampaign()
-        EzoAccessibilityService.toggleFloatingBubble(ctx, false)
-        EzoAccessibilityService.setAppPaused(ctx, true)
         wasAutoPausedByLicenseLock = true
     }
 
@@ -837,11 +943,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         eval: LicenseEvaluationResult,
         updateEval: UpdateLockEvaluation = _updateLockEvaluation.value
     ) {
-        val ctx = getApplication<Application>()
         if (eval.isLocked || updateEval.isLocked) {
             shutdownBackgroundServicesOnLock()
         } else if (wasAutoPausedByLicenseLock) {
-            EzoAccessibilityService.setAppPaused(ctx, false)
             wasAutoPausedByLicenseLock = false
         }
     }
@@ -992,10 +1096,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 result.onSuccess { published ->
                     _serverAppUpdateInfo.value = published
                     refreshUpdateLockEvaluation(currentUser.value, published)
+                    cloudRepo.publishTeamNotification(
+                        type = TeamNotificationType.APP_UPDATE,
+                        priority = if (published.forceUpdate) TeamNotificationPriority.URGENT else TeamNotificationPriority.IMPORTANT,
+                        targetMode = TeamNotificationTargetMode.ALL,
+                        title = if (published.forceUpdate) {
+                            "Actualización Obligatoria v${published.latestVersionName} (Comp. ${published.latestVersionCode})"
+                        } else {
+                            "Nueva versión disponible v${published.latestVersionName} (Comp. ${published.latestVersionCode})"
+                        },
+                        body = published.releaseNotes.ifBlank {
+                            "Ya está disponible una nueva actualización de Como On para instalar."
+                        },
+                        actionUrl = published.apkDownloadUrl,
+                        requiredVersionCode = published.latestVersionCode,
+                        senderNameOverride = currentUser.value?.username.orEmpty()
+                    )
                     _appUpdateCheckFeedback.value = if (published.forceUpdate) {
-                        "🔒 Versión v${published.latestVersionName} (Comp. ${published.latestVersionCode}) publicada con ACTUALIZACIÓN OBLIGATORIA global."
+                        "🔒 Versión v${published.latestVersionName} (Comp. ${published.latestVersionCode}) publicada con ACTUALIZACIÓN OBLIGATORIA global y aviso enviado."
                     } else {
-                        "📢 Aviso opcional v${published.latestVersionName} (Comp. ${published.latestVersionCode}) publicado para el equipo."
+                        "📢 Versión v${published.latestVersionName} (Comp. ${published.latestVersionCode}) publicada y notificada a todo el equipo."
                     }
                 }.onFailure { err ->
                     _appUpdateCheckFeedback.value = err.message ?: "No se pudo publicar la actualización."
@@ -1012,8 +1132,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         requiredVersionCode: Int = _serverAppUpdateInfo.value?.latestVersionCode ?: (BuildConfig.VERSION_CODE + 1),
         reason: String = ""
     ) {
+        val minNextVersionCode = BuildConfig.VERSION_CODE + 1
         val targetVersionCode = if (requireUpdate) {
-            requiredVersionCode.coerceAtLeast(BuildConfig.VERSION_CODE)
+            maxOf(requiredVersionCode, minNextVersionCode)
         } else {
             user.requiredVersionCode
         }
@@ -1025,62 +1146,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ""
         }
         viewModelScope.launch {
-            repository.setUserUpdateLock(
+            val res = repository.setUserUpdateLock(
                 userId = user.id,
                 updateRequired = requireUpdate,
                 requiredVersionCode = targetVersionCode,
                 reason = finalReason,
-                syncToCloud = true
+                syncToCloud = true,
+                userFallback = user
             )
-            _appUpdateCheckFeedback.value = if (requireUpdate) {
-                "📲 Bloqueo temporal por actualización activado para ${user.username} (Comp. >= $targetVersionCode)."
-            } else {
-                "✅ ${user.username} fue habilitado manualmente por el Administrador."
-            }
-        }
-    }
-
-    fun enableBankingMode() {
-        EzoAccessibilityService.enableBankingMode(fromAutoDetection = false)
-    }
-
-    fun disableBankingMode() {
-        EzoAccessibilityService.disableBankingMode()
-        _killSwitchTriggered.value = false
-    }
-
-    fun setAppPaused(context: android.content.Context, paused: Boolean) {
-        if (paused) {
-            automationManager.pauseCampaign()
-        }
-        EzoAccessibilityService.setAppPaused(context, paused)
-        if (!paused) {
-            _killSwitchTriggered.value = false
-        }
-    }
-
-    fun executeKillSwitch(context: android.content.Context): Boolean {
-        automationManager.stopCampaign()
-        notificationHelper.cancelAllNotifications()
-        val disabled = EzoAccessibilityService.executeKillSwitch(context)
-        _killSwitchTriggered.value = true
-        return disabled
-    }
-
-    fun disableServiceForBanking(context: android.content.Context): Boolean {
-        return executeKillSwitch(context)
-    }
-
-    fun openAccessibilitySettings(context: android.content.Context) {
-        EzoAccessibilityService.openAccessibilitySettings(context)
-    }
-
-    fun scanCrmScreenNow(autoScroll: Boolean = true) {
-        val service = EzoAccessibilityService.instance
-        if (service != null) {
-            viewModelScope.launch {
-                service.scanScreenAndPersist(autoScroll = autoScroll)
-            }
+            val msg = res.fold(
+                onSuccess = {
+                    if (requireUpdate) {
+                        "📲 Bloqueo temporal por actualización activado para ${user.username} (Comp. >= $targetVersionCode)."
+                    } else {
+                        "✅ ${user.username} fue habilitado manualmente por el Administrador."
+                    }
+                },
+                onFailure = { err ->
+                    err.message ?: "No se pudo actualizar el bloqueo por versión en Firestore."
+                }
+            )
+            _adminUserActionFeedback.value = msg
+            _appUpdateCheckFeedback.value = msg
         }
     }
 
@@ -1115,10 +1202,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.clearScannedChats()
         }
-    }
-
-    fun toggleFloatingBubble(context: Context, show: Boolean) {
-        EzoAccessibilityService.toggleFloatingBubble(context, show)
     }
 
     fun syncScannedFolder(folderName: String) {
@@ -1385,6 +1468,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         sellerStatsListenerJob?.cancel()
         appErrorsListenerJob?.cancel()
         accessTokensListenerJob?.cancel()
+        teamNotificationsListenerJob?.cancel()
+        teamNotificationsListenerJob = viewModelScope.launch {
+            cloudRepo.observeTeamNotificationsForUser(
+                viewerEmailRaw = signedUser.normalizedEmail,
+                isSuperuser = signedUser.role == "SUPERUSER"
+            ).collect { list ->
+                _teamNotifications.value = list
+                notifyIncomingTeamAlertsIfNew(
+                    notifications = list,
+                    viewerEmail = signedUser.normalizedEmail
+                )
+            }
+        }
         if (signedUser.role == "SUPERUSER") {
             _subordinateUsers.value = emptyList()
             allUsersListenerJob = viewModelScope.launch {
@@ -1490,6 +1586,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         sellerStatsListenerJob?.cancel()
         appErrorsListenerJob?.cancel()
         accessTokensListenerJob?.cancel()
+        teamNotificationsListenerJob?.cancel()
         userListenerJob = null
         allUsersListenerJob = null
         subordinateUsersListenerJob = null
@@ -1503,6 +1600,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         sellerStatsListenerJob = null
         appErrorsListenerJob = null
         accessTokensListenerJob = null
+        teamNotificationsListenerJob = null
     }
 
     fun flushPendingAppErrorsNow(manualFeedback: Boolean = false) {
@@ -1644,6 +1742,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _hierarchyActionFeedback.value = null
         _appErrors.value = emptyList()
         _cloudAccessTokens.value = emptyList()
+        _teamNotifications.value = emptyList()
         _accessTokenActionFeedback.value = null
         _updateLockEvaluation.value = UpdateLockEvaluation(false, 0, "", false)
         viewModelScope.launch {
@@ -1653,7 +1752,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _googleAuthUiState.value = GoogleAuthUiState.Idle
     }
 
-    // --- HIERARCHY & PYRAMID MANAGEMENT ACTIONS ---
+    // --- HIERARCHY & TEAM MANAGEMENT ACTIONS ---
 
     fun clearHierarchyActionFeedback() {
         _hierarchyActionFeedback.value = null
@@ -1807,7 +1906,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val cloudRepo = repository.cloudTeamRepository ?: return
         if (currentUser.value?.role != "SUPERUSER") {
-            _hierarchyActionFeedback.value = "Solo el Superusuario puede mover usuarios en la pirámide."
+            _hierarchyActionFeedback.value = "Solo el Superusuario puede mover vendedores en el equipo."
             return
         }
         if (_isHierarchyActionBusy.value) return
@@ -3335,6 +3434,226 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (leadIds.isEmpty()) return
         viewModelScope.launch {
             repository.batchDeletePsaLeads(leadIds.toList())
+        }
+    }
+
+    // --- UNIFIED TEAM NOTIFICATIONS & CALL REMINDERS ---
+
+    fun clearTeamNotificationFeedback() {
+        _teamNotificationFeedback.value = null
+    }
+
+    fun dismissPriorityBanner(notifId: String) {
+        if (notifId.isBlank()) return
+        _dismissedBannerIds.value = _dismissedBannerIds.value + notifId
+    }
+
+    fun markNotificationRead(notifId: String) {
+        if (notifId.isBlank()) return
+        viewModelScope.launch {
+            repository.markNotificationRead(notifId)
+        }
+    }
+
+    fun markAllNotificationsRead() {
+        val ids = _teamNotifications.value.map { it.id }
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            repository.markAllNotificationsRead(ids)
+        }
+    }
+
+    fun sendSuperuserNotification(
+        targetMode: TeamNotificationTargetMode,
+        targetEmail: String,
+        priority: TeamNotificationPriority,
+        title: String,
+        body: String,
+        actionUrl: String = ""
+    ) {
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            _teamNotificationFeedback.value = "Firebase no está inicializado."
+            return
+        }
+        if (currentUser.value?.role != "SUPERUSER") {
+            _teamNotificationFeedback.value = "Solo el Superusuario puede enviar avisos administrativos."
+            return
+        }
+        val notifType = if (targetMode == TeamNotificationTargetMode.ALL) {
+            TeamNotificationType.SUPERUSER_GLOBAL
+        } else {
+            TeamNotificationType.SUPERUSER_DIRECT
+        }
+        viewModelScope.launch {
+            cloudRepo.publishTeamNotification(
+                type = notifType,
+                priority = priority,
+                targetMode = targetMode,
+                targetEmailRaw = targetEmail,
+                title = title,
+                body = body,
+                actionUrl = actionUrl,
+                senderNameOverride = currentUser.value?.username.orEmpty()
+            ).fold(
+                onSuccess = {
+                    val scopeLabel = if (targetMode == TeamNotificationTargetMode.ALL) "todos los vendedores" else targetEmail
+                    _teamNotificationFeedback.value = "✅ Aviso enviado a $scopeLabel."
+                },
+                onFailure = { err ->
+                    _teamNotificationFeedback.value = err.message ?: "No se pudo enviar el aviso."
+                }
+            )
+        }
+    }
+
+    fun sendLeaderCoachingMessage(
+        targetEmail: String,
+        title: String,
+        body: String
+    ) {
+        val cloudRepo = repository.cloudTeamRepository
+        if (cloudRepo == null) {
+            _hierarchyActionFeedback.value = "Firebase no está inicializado."
+            return
+        }
+        viewModelScope.launch {
+            cloudRepo.publishTeamNotification(
+                type = TeamNotificationType.LEADER_COACHING,
+                priority = TeamNotificationPriority.IMPORTANT,
+                targetMode = TeamNotificationTargetMode.USER,
+                targetEmailRaw = targetEmail,
+                title = title.trim().ifBlank { "Mensaje de tu Líder de Equipo" },
+                body = body,
+                senderNameOverride = currentUser.value?.username.orEmpty()
+            ).fold(
+                onSuccess = {
+                    _hierarchyActionFeedback.value = "✅ Mensaje de equipo enviado a $targetEmail."
+                },
+                onFailure = { err ->
+                    _hierarchyActionFeedback.value = err.message ?: "No se pudo enviar el mensaje."
+                }
+            )
+        }
+    }
+
+    private fun notifyIncomingTeamAlertsIfNew(
+        notifications: List<TeamNotification>,
+        viewerEmail: String
+    ) {
+        val readIds = readNotificationIds.value
+        val ctx = getApplication<Application>()
+        val prefs = ctx.getSharedPreferences("team_notif_os_cache", Context.MODE_PRIVATE)
+        val shownIds = prefs.getStringSet("shown_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+        var addedAny = false
+        notifications
+            .filter { notif ->
+                notif.id.isNotBlank() &&
+                    notif.id !in readIds &&
+                    notif.id !in shownIds &&
+                    notif.senderEmail.lowercase() != viewerEmail.lowercase()
+            }
+            .take(3)
+            .forEach { notif ->
+                notificationHelper.showTeamNotificationAlert(
+                    notifId = notif.id,
+                    title = notif.title,
+                    body = notif.body,
+                    isAppUpdate = notif.parsedType == TeamNotificationType.APP_UPDATE,
+                    senderName = notif.senderName
+                )
+                shownIds.add(notif.id)
+                addedAny = true
+            }
+        if (addedAny) {
+            prefs.edit().putStringSet("shown_ids", shownIds.toList().takeLast(120).toSet()).apply()
+        }
+    }
+
+    fun createCallReminder(
+        hourOfDay: Int,
+        minute: Int,
+        title: String,
+        note: String
+    ) {
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hourOfDay.coerceIn(0, 23))
+            set(Calendar.MINUTE, minute.coerceIn(0, 59))
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            if (timeInMillis <= System.currentTimeMillis() + 10_000L) {
+                add(Calendar.DAY_OF_YEAR, 1)
+            }
+        }
+        val reminder = CallReminderEntity(
+            title = title.trim().ifBlank { "Tanda de llamadas (${String.format(Locale.ROOT, "%02d:%02d", hourOfDay, minute)})" },
+            triggerAtMs = cal.timeInMillis,
+            note = note.trim(),
+            isEnabled = true,
+            isAutoPeakRecommendation = false
+        )
+        viewModelScope.launch {
+            repository.upsertCallReminder(reminder)
+            CallReminderScheduler.scheduleReminder(getApplication(), reminder)
+        }
+    }
+
+    fun toggleCallReminder(reminder: CallReminderEntity, enabled: Boolean) {
+        val nextTrigger = if (enabled && reminder.triggerAtMs <= System.currentTimeMillis() + 10_000L) {
+            val cal = Calendar.getInstance().apply { timeInMillis = reminder.triggerAtMs }
+            val nextCal = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, cal.get(Calendar.HOUR_OF_DAY))
+                set(Calendar.MINUTE, cal.get(Calendar.MINUTE))
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+                if (timeInMillis <= System.currentTimeMillis() + 10_000L) {
+                    add(Calendar.DAY_OF_YEAR, 1)
+                }
+            }
+            nextCal.timeInMillis
+        } else {
+            reminder.triggerAtMs
+        }
+        val updated = reminder.copy(isEnabled = enabled, triggerAtMs = nextTrigger)
+        viewModelScope.launch {
+            repository.upsertCallReminder(updated)
+            if (enabled) {
+                CallReminderScheduler.scheduleReminder(getApplication(), updated)
+            } else {
+                CallReminderScheduler.cancelReminder(getApplication(), updated.id)
+            }
+        }
+    }
+
+    fun deleteCallReminder(reminder: CallReminderEntity) {
+        viewModelScope.launch {
+            CallReminderScheduler.cancelReminder(getApplication(), reminder.id)
+            repository.deleteCallReminder(reminder.id)
+        }
+    }
+
+    fun togglePrePeakReminder(enabled: Boolean) {
+        _prePeakReminderEnabled.value = enabled
+        repository.setPrePeakReminderEnabled(enabled)
+        val prePeakId = "auto_pre_peak_call_reminder"
+        if (enabled) {
+            val analysis = callTimingAnalysis.value
+            val triggerAt = PsaCallCoachingEngine.computeNextPrePeakTriggerMs(
+                targetHour = analysis.recommendedReminderHour,
+                targetMinute = analysis.recommendedReminderMinute,
+                leadMinutes = 10
+            )
+            val prePeakReminder = CallReminderEntity(
+                id = prePeakId,
+                title = "Mejor horario de llamadas en 10 min (${String.format(Locale.ROOT, "%02d:%02d", analysis.recommendedReminderHour, analysis.recommendedReminderMinute)})",
+                triggerAtMs = triggerAt,
+                note = analysis.recommendationHeadline,
+                isEnabled = true,
+                isAutoPeakRecommendation = true
+            )
+            CallReminderScheduler.scheduleReminder(getApplication(), prePeakReminder)
+        } else {
+            CallReminderScheduler.cancelReminder(getApplication(), prePeakId)
         }
     }
 }

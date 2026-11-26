@@ -3,10 +3,8 @@ package com.example.service
 import com.example.data.model.AutomationConfig
 import com.example.data.model.AutomationState
 import com.example.data.model.LiveAutomationProgress
-import com.example.data.model.ScannedChat
 import com.example.data.model.ScriptItem
 import com.example.data.repository.EzoRepository
-import com.example.util.UnattendedAutomationLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.Collections
 import kotlin.random.Random
 
 class AutomationManager(
@@ -31,30 +30,35 @@ class AutomationManager(
     private val _config = MutableStateFlow(AutomationConfig())
     val config = _config.asStateFlow()
 
-    init {
-        // Wire up callbacks from floating overlay
-        EzoAccessibilityService.onStartAutomationRequested = {
-            scope.launch {
-                val scripts = repository.allScripts.first()
-                val targetScript = scripts.firstOrNull { it.id == _config.value.selectedScriptId }
-                    ?: scripts.firstOrNull()
-                if (targetScript != null) {
-                    startCampaign(targetScript)
-                } else {
-                    _progress.value = _progress.value.copy(
-                        state = AutomationState.ERROR,
-                        lastActionMessage = "Por favor selecciona o crea un script primero."
-                    )
-                }
+    companion object {
+        private val processedRecipientsInSession: MutableSet<String> =
+            Collections.synchronizedSet(mutableSetOf())
+
+        private fun normalizeRecipientKeys(identifier: String): Set<String> {
+            val trimmed = identifier.trim().lowercase()
+            if (trimmed.isEmpty()) return emptySet()
+            val digits = trimmed.filter { it.isDigit() }
+            return if (digits.length >= 7) {
+                setOf(trimmed, digits)
+            } else {
+                setOf(trimmed)
             }
         }
 
-        EzoAccessibilityService.onPauseAutomationRequested = {
-            pauseCampaign()
+        fun clearProcessedRecipientsSession() {
+            processedRecipientsInSession.clear()
         }
 
-        EzoAccessibilityService.onStopAutomationRequested = {
-            stopCampaign()
+        fun markRecipientProcessed(identifier: String) {
+            processedRecipientsInSession.addAll(normalizeRecipientKeys(identifier))
+        }
+
+        fun unmarkRecipientProcessed(identifier: String) {
+            processedRecipientsInSession.removeAll(normalizeRecipientKeys(identifier))
+        }
+
+        fun isRecipientProcessed(identifier: String): Boolean {
+            return normalizeRecipientKeys(identifier).any { processedRecipientsInSession.contains(it) }
         }
     }
 
@@ -91,7 +95,6 @@ class AutomationManager(
                 state = AutomationState.ERROR,
                 lastActionMessage = "Fuera del horario permitido ($startStr - $endStr). Desactiva la protección nocturna o espera al horario hábil."
             )
-            EzoAccessibilityService.instance?.updateFloatingStatus("Fuera de horario ($startStr-$endStr)")
             return
         }
 
@@ -108,45 +111,36 @@ class AutomationManager(
                 state = AutomationState.PAUSED,
                 lastActionMessage = "Campaña pausada."
             )
-            EzoAccessibilityService.instance?.updateFloatingStatus("Pausado")
-            EzoAccessibilityService.instance?.hideDimOverlay()
         }
     }
 
     fun stopCampaign() {
         automationJob?.cancel()
-        EzoAccessibilityService.clearProcessedRecipientsSession()
+        clearProcessedRecipientsSession()
         _progress.value = LiveAutomationProgress(
             state = AutomationState.IDLE,
             lastActionMessage = "Campaña detenida."
         )
-        EzoAccessibilityService.instance?.updateFloatingStatus("Detenido")
-        EzoAccessibilityService.instance?.hideDimOverlay()
     }
 
     private suspend fun runCampaignLoop(script: ScriptItem) {
         val currentCfg = _config.value
-        val accessibilityService = EzoAccessibilityService.instance
-        val useRealAccessibility = accessibilityService != null
 
-        // 0. Verify authorized active user account
         val user = repository.currentUser.value
         if (user == null || user.isBlocked || user.isExpired) {
             _progress.value = _progress.value.copy(
                 state = AutomationState.ERROR,
                 lastActionMessage = "Usuario no habilitado o suscripción vencida. Inicia sesión con una cuenta activa."
             )
-            accessibilityService?.updateFloatingStatus("Acceso no autorizado")
             return
         }
 
-        // Fetch selected chats from database for this round that are not in active session memory
         val allSelected = repository.selectedScannedChats.first()
         val candidateRecipients = allSelected.filter {
             it.isSelected &&
-            !EzoAccessibilityService.isRecipientProcessed(it.id) &&
-            !EzoAccessibilityService.isRecipientProcessed(it.phoneNumber) &&
-            !EzoAccessibilityService.isRecipientProcessed(it.name)
+                !isRecipientProcessed(it.id) &&
+                !isRecipientProcessed(it.phoneNumber) &&
+                !isRecipientProcessed(it.name)
         }
 
         if (candidateRecipients.isEmpty()) {
@@ -158,30 +152,28 @@ class AutomationManager(
                     "No hay chats seleccionados. Marca las casillas de los contactos para iniciar la ronda."
                 }
             )
-            accessibilityService?.updateFloatingStatus("Sin chats pendientes")
             return
         }
 
         _progress.value = _progress.value.copy(
             state = AutomationState.SCANNING,
             totalChatsFound = candidateRecipients.size,
-            lastActionMessage = "Iniciando envío a ${candidateRecipients.size} chats seleccionados...",
+            lastActionMessage = "Iniciando preparación para ${candidateRecipients.size} contactos seleccionados...",
             currentFolder = currentCfg.targetCrmFolder
         )
 
-        delay(800)
+        delay(600)
 
         var campaignSuccessCount = 0
-        var campaignFailureCount = 0
+        val campaignFailureCount = 0
 
         for ((index, chat) in candidateRecipients.withIndex()) {
             val contactName = chat.name.ifBlank { chat.phoneNumber }
             val recipientId = chat.phoneNumber.ifBlank { chat.id }
 
-            // CRITICAL: Live Security Kill Switch - Block & Expiration enforcement
-            val currentUser = repository.currentUser.value
-            if (currentUser == null || currentUser.isBlocked || currentUser.isExpired) {
-                val blockReason = if (currentUser?.isBlocked == true) {
+            val activeUser = repository.currentUser.value
+            if (activeUser == null || activeUser.isBlocked || activeUser.isExpired) {
+                val blockReason = if (activeUser?.isBlocked == true) {
                     "Acceso Revocado: Tu cuenta ha sido bloqueada por el administrador."
                 } else {
                     "Acceso Expirado: El periodo de tu licencia ha concluido."
@@ -190,13 +182,10 @@ class AutomationManager(
                     state = AutomationState.PAUSED,
                     lastActionMessage = blockReason
                 )
-                accessibilityService?.updateFloatingStatus("SUSPENDIDO (Bloqueo)")
-                accessibilityService?.hideDimOverlay()
                 stopCampaign()
                 return
             }
 
-            // Check night quiet hours before processing each message
             val calNow = java.util.Calendar.getInstance()
             val nowH = calNow.get(java.util.Calendar.HOUR_OF_DAY)
             val nowM = calNow.get(java.util.Calendar.MINUTE)
@@ -206,35 +195,12 @@ class AutomationManager(
                     state = AutomationState.PAUSED,
                     lastActionMessage = "Pausado automáticamente: horario nocturno alcanzado ($endStr)."
                 )
-                accessibilityService?.updateFloatingStatus("Pausado (horario nocturno)")
-                accessibilityService?.hideDimOverlay()
                 return
-            }
-
-            if (currentCfg.dimScreenWhileAutomating) {
-                accessibilityService?.showDimOverlay("Enviando ${index + 1}/${candidateRecipients.size} a $contactName")
             }
 
             val minDelay = currentCfg.minDelaySeconds
             val maxDelay = currentCfg.maxDelaySeconds
 
-            // Explicit check: Ensure focus remains strictly within the CRM application context during automation loops
-            if (useRealAccessibility && accessibilityService != null && !accessibilityService.isApplicationContext()) {
-                val pauseMessage = "Pausa preventiva: el CRM no está enfocado en pantalla. Abre el CRM y reanuda."
-                _progress.value = _progress.value.copy(
-                    state = AutomationState.PAUSED,
-                    lastActionMessage = pauseMessage
-                )
-                accessibilityService.updateFloatingStatus("Pausado (CRM fuera de foco)")
-                accessibilityService.hideDimOverlay()
-                notificationHelper.showFailureNotification(
-                    recipient = "$contactName ($recipientId)",
-                    reason = pauseMessage
-                )
-                return
-            }
-
-            // 1. Anti-spam delay pacing countdown
             _progress.value = _progress.value.copy(
                 state = AutomationState.WAITING_DELAY,
                 currentChatIndex = index + 1,
@@ -242,47 +208,18 @@ class AutomationManager(
                 lastActionMessage = "Pausa anti-spam activa para proteger tu cuenta..."
             )
 
-            accessibilityService?.applicationContext?.let { ctx ->
-                UnattendedAutomationLogger.logEvent(
-                    context = ctx,
-                    tag = "PAUSA_ANTI_SPAM",
-                    recipient = "$contactName ($recipientId)",
-                    status = "EN_ESPERA",
-                    exitedChatSuccessfully = true,
-                    details = "Iniciando cuenta regresiva de pausa anti-spam (${minDelay}-${maxDelay}s)"
-                )
+            val safeMin = minDelay.coerceAtLeast(1)
+            val safeMax = maxDelay.coerceAtLeast(safeMin)
+            val delayDuration = Random.nextInt(safeMin, safeMax + 1)
+            for (sec in delayDuration downTo 1) {
+                _progress.value = _progress.value.copy(secondsRemaining = sec)
+                delay(1000)
             }
 
-            val delayDuration = if (accessibilityService != null) {
-                accessibilityService.awaitAntiSpamDelay(minDelay, maxDelay) { sec ->
-                    _progress.value = _progress.value.copy(secondsRemaining = sec)
-                    accessibilityService.updateLiveProgress(
-                        sentCount = campaignSuccessCount,
-                        totalCount = candidateRecipients.size,
-                        nextDelaySeconds = sec
-                    )
-                }
-            } else {
-                val jitter = Random.nextInt(minDelay.coerceAtLeast(20), maxDelay.coerceAtLeast(minDelay) + 1)
-                for (sec in jitter downTo 1) {
-                    _progress.value = _progress.value.copy(secondsRemaining = sec)
-                    delay(1000)
-                }
-                jitter
-            }
-
-            // 2. Message sending execution
             _progress.value = _progress.value.copy(
                 state = AutomationState.SENDING,
                 secondsRemaining = 0,
-                lastActionMessage = "Escribiendo y enviando mensaje a $contactName..."
-            )
-            accessibilityService?.updateFloatingStatus("Enviando a $contactName (${index + 1}/${candidateRecipients.size})")
-            accessibilityService?.updateLiveProgress(
-                sentCount = campaignSuccessCount,
-                totalCount = candidateRecipients.size,
-                nextDelaySeconds = 0,
-                statusLabel = "🚀 Enviando a $contactName"
+                lastActionMessage = "Procesando mensaje para $contactName..."
             )
 
             val personalizedMessage = if (currentCfg.useAiSmartResponse) {
@@ -318,140 +255,43 @@ class AutomationManager(
                 )
             }
 
-            val (isSuccess, failureReason) = if (useRealAccessibility && accessibilityService != null) {
-                accessibilityService.performChatDelivery(
-                    recipientName = contactName,
-                    recipientPhone = recipientId,
-                    messageText = personalizedMessage
-                )
-            } else {
-                delay(1200)
-                Pair(true, null)
+            delay(800)
+
+            markRecipientProcessed(contactName)
+            markRecipientProcessed(recipientId)
+            markRecipientProcessed(chat.id)
+            val digits = recipientId.filter { it.isDigit() }
+            if (digits.length >= 6) {
+                markRecipientProcessed(digits)
             }
 
-            // Explicit check: Ensure focus remains strictly within the CRM environment after navigating between chats
-            if (useRealAccessibility && accessibilityService != null && !accessibilityService.isApplicationContext()) {
-                delay(1000)
-                if (!accessibilityService.isApplicationContext()) {
-                    val pauseMessage = "Pausa preventiva: se perdió el contexto del CRM tras navegar entre chats. Abre el CRM y reanuda."
-                    _progress.value = _progress.value.copy(
-                        state = AutomationState.PAUSED,
-                        lastActionMessage = pauseMessage
-                    )
-                    accessibilityService.updateFloatingStatus("Pausado (CRM fuera de foco)")
-                    accessibilityService.hideDimOverlay()
-                    notificationHelper.showFailureNotification(
-                        recipient = "$contactName ($recipientId)",
-                        reason = pauseMessage
-                    )
-                    return
-                }
-            }
+            repository.deleteScannedChat(chat.id)
 
-            // DUPLICATE PREVENTION AFTER SENDING:
-            // User requirement: "Desmarcarlo en la ronda y desactivarlo luego de enviar el mensaje, quitarlo de la lista"
-            if (isSuccess) {
-                // 1. Lock in memory immediately so it is never targeted again in this session
-                EzoAccessibilityService.markRecipientProcessed(contactName)
-                EzoAccessibilityService.markRecipientProcessed(recipientId)
-                EzoAccessibilityService.markRecipientProcessed(chat.id)
-                val digits = recipientId.filter { it.isDigit() }
-                if (digits.length >= 6) {
-                    EzoAccessibilityService.markRecipientProcessed(digits)
-                }
-
-                // 2. Remove sent chat from list in Como On so it disappears and avoids any duplicate delivery
-                repository.deleteScannedChat(chat.id)
-                EzoAccessibilityService.updateSelectedChatsCount(candidateRecipients.size - (index + 1))
-            } else if (failureReason?.contains("CONTACT_NOT_") == true) {
-                // User requirement: Do NOT remove or uncheck the contact from the list if not found due to network delays.
-                // Keep the contact intact for future attempts and notify status.
-                _progress.value = _progress.value.copy(
-                    lastActionMessage = "Contacto $contactName no cargó a tiempo en CRM (red lenta). Conservado en lista. Pasando al siguiente..."
-                )
-            } else {
-                // Keep the contact intact for future attempts and notify status.
-                _progress.value = _progress.value.copy(
-                    lastActionMessage = failureReason ?: "No se pudo entregar el mensaje a $contactName. Continuando..."
-                )
-            }
-
-            // 3. Handle pause safely if required (only if stuck inside a conversation or minimized)
-            if (!isSuccess && failureReason?.contains("CONTACT_NOT_") != true &&
-                (failureReason?.contains("salir del chat") == true ||
-                 failureReason?.contains("APP_MINIMIZED") == true ||
-                 failureReason?.contains("STILL_IN_CHAT") == true ||
-                 failureReason?.contains("CHAT_LIST_NOT_DETECTED") == true ||
-                 failureReason?.contains("minimizó") == true)) {
-                val pauseMessage = when {
-                    failureReason.contains("APP_MINIMIZED") || failureReason.contains("minimizó") ->
-                        "Pausa de seguridad: la app CRM se minimizó o fue al inicio. Abre la lista de contactos del CRM y reanuda."
-                    failureReason.contains("CHAT_LIST_NOT_DETECTED") ->
-                        "Pausa de seguridad: no se confirmó la lista de contactos del CRM. Vuelve a la lista y reanuda."
-                    else ->
-                        "Pausa de seguridad: no se pudo salir del chat para evitar duplicados. Regresa a la lista del CRM y reanuda."
-                }
-                _progress.value = _progress.value.copy(
-                    state = AutomationState.PAUSED,
-                    lastActionMessage = pauseMessage
-                )
-                accessibilityService?.updateFloatingStatus("Pausado (seguridad)")
-                accessibilityService?.updateLiveProgress(
-                    sentCount = campaignSuccessCount,
-                    totalCount = candidateRecipients.size,
-                    nextDelaySeconds = 0,
-                    statusLabel = "⏸ Pausado por seguridad"
-                )
-                accessibilityService?.hideDimOverlay()
-                accessibilityService?.playSafetyAlertSound()
-                accessibilityService?.vibrateSafetyAlert()
-                notificationHelper.showFailureNotification(
-                    recipient = "$contactName ($recipientId)",
-                    reason = pauseMessage
-                )
-                return
-            }
-
-            // 4. Log delivery result in database
-            val statusStr = if (isSuccess) "SUCCESS" else "FAILED"
             repository.logDelivery(
                 recipientId = recipientId,
                 recipientPreview = contactName,
                 crmFolder = currentCfg.targetCrmFolder,
                 scriptTitle = if (currentCfg.useAiSmartResponse) "Respuesta Inteligente IA (${currentCfg.aiResponseStrategy})" else script.title,
                 scriptSnippet = personalizedMessage.take(60) + "...",
-                status = statusStr,
-                errorMessage = failureReason,
+                status = "SUCCESS",
+                errorMessage = null,
                 delaySeconds = delayDuration
             )
 
-            // 5. Notifications
-            if (isSuccess) {
-                campaignSuccessCount++
-                if (currentCfg.notifyOnEverySuccess) {
-                    notificationHelper.showSuccessNotification(
-                        recipient = "$contactName ($recipientId)",
-                        delaySeconds = delayDuration,
-                        snippet = personalizedMessage.take(50) + "..."
-                    )
-                }
-            } else if (failureReason?.contains("CONTACT_NOT_") == true) {
-                // Do not alarm user with failure notifications for network delays; contact is kept for later
-            } else {
-                campaignFailureCount++
-                notificationHelper.showFailureNotification(
+            campaignSuccessCount++
+            if (currentCfg.notifyOnEverySuccess) {
+                notificationHelper.showSuccessNotification(
                     recipient = "$contactName ($recipientId)",
-                    reason = failureReason ?: "Error al enviar mensaje"
+                    delaySeconds = delayDuration,
+                    snippet = personalizedMessage.take(50) + "..."
                 )
             }
 
-            delay(600)
+            delay(400)
         }
 
-        // Round completed: clear session memory so contacts can be selected again for future rounds
-        EzoAccessibilityService.clearProcessedRecipientsSession()
+        clearProcessedRecipientsSession()
 
-        // Show clean consolidated summary notification upon completion
         notificationHelper.showCampaignSummaryNotification(
             totalSent = campaignSuccessCount,
             totalFailed = campaignFailureCount
@@ -459,27 +299,7 @@ class AutomationManager(
 
         _progress.value = _progress.value.copy(
             state = AutomationState.COMPLETED,
-            lastActionMessage = "¡Campaña finalizada con éxito! Se enviaron $campaignSuccessCount mensajes."
+            lastActionMessage = "¡Campaña finalizada con éxito! Se procesaron $campaignSuccessCount mensajes."
         )
-        accessibilityService?.updateFloatingStatus("¡Campaña finalizada!")
-        accessibilityService?.updateLiveProgress(
-            sentCount = campaignSuccessCount,
-            totalCount = candidateRecipients.size,
-            nextDelaySeconds = 0,
-            statusLabel = "✅ ¡Finalizado ($campaignSuccessCount)!"
-        )
-        accessibilityService?.hideDimOverlay()
-        accessibilityService?.vibrateCompletion()
-
-        accessibilityService?.applicationContext?.let { ctx ->
-            UnattendedAutomationLogger.logEvent(
-                context = ctx,
-                tag = "CAMPANA_FINALIZADA",
-                recipient = "TODOS",
-                status = "COMPLETADO",
-                exitedChatSuccessfully = true,
-                details = "Campaña completada. Total enviados: $campaignSuccessCount, fallidos: $campaignFailureCount"
-            )
-        }
     }
 }

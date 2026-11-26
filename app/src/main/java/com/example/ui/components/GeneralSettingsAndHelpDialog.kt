@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.RestartAlt
@@ -89,10 +90,11 @@ fun GeneralSettingsAndHelpDialog(
     onSelectFontLevel: (FontScaleLevel) -> Unit,
     onSelectCountry: (String) -> Unit,
     onShowSetupGuideAgain: () -> Unit,
-    onOpenAccessibilitySettings: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
     onCheckAppDistributionUpdates: () -> Unit = {},
     onOpenPsaPricing: () -> Unit = {},
     onOpenPsaDipPortal: () -> Unit = {},
+    onOpenWelcomeTutorial: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var activeTabIndex by remember { mutableIntStateOf(0) }
@@ -408,11 +410,11 @@ fun GeneralSettingsAndHelpDialog(
                             if (isLargeFont) {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     OutlinedButton(
-                                        onClick = onOpenAccessibilitySettings,
+                                        onClick = onOpenNotificationSettings,
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Text("Permisos del Teléfono", fontSize = 12.sp, color = TextPrimary)
+                                        Text("Permisos de Notificación", fontSize = 12.sp, color = TextPrimary)
                                     }
                                     if (hasDismissedSetupGuide) {
                                         OutlinedButton(
@@ -457,11 +459,11 @@ fun GeneralSettingsAndHelpDialog(
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     OutlinedButton(
-                                        onClick = onOpenAccessibilitySettings,
+                                        onClick = onOpenNotificationSettings,
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Text("Permisos Android", fontSize = 11.5.sp, color = TextPrimary)
+                                        Text("Notificaciones", fontSize = 11.5.sp, color = TextPrimary)
                                     }
                                     if (hasDismissedSetupGuide) {
                                         OutlinedButton(
@@ -510,20 +512,39 @@ fun GeneralSettingsAndHelpDialog(
                     )
 
                     HelpAccordionItem(
-                        title = "🚀 Primeros Pasos y Permisos",
-                        summary = "Accesibilidad, notificaciones y burbuja flotante",
-                        body = "Para automatizar envíos y responder rápido necesitas activar:\n" +
-                            "1. Servicio de Accesibilidad (Ajustes > Apps instaladas > Como On).\n" +
-                            "2. Notificaciones del sistema para avisos de fin de campaña.\n" +
-                            "3. Mostrar sobre otras apps para usar la burbuja flotante en WhatsApp o CRM."
+                        title = "🚀 Primeros Pasos y Notificaciones",
+                        summary = "Activar alertas de equipo, avisos y recordatorios",
+                        body = "Para recibir avisos de actualizaciones, mensajes de tu líder y recordatorios de llamadas:\n" +
+                            "1. Mantén activadas las notificaciones de la aplicación en Ajustes.\n" +
+                            "2. Revisa la campanita superior para ver avisos importantes o mensajes de equipo."
                     )
 
-                    HelpAccordionItem(
-                        title = "🛡️ Modo Banco Seguro / Kill Switch",
-                        summary = "Qué hacer antes de abrir Banco Nación (BNA+) u otros bancos",
-                        body = "Las apps bancarias (Banco Nación BNA+, Galicia, Mercado Pago, etc.) detectan servicios de accesibilidad por seguridad y muestran 'app trabajando en remoto'.\n\n" +
-                            "No necesitas desinstalar Como On: toca 'Pausar Servicio' desde el Panel o Automatización antes de abrir tu banco. Al terminar, toca 'Reactivar'."
-                    )
+                    OutlinedButton(
+                        onClick = {
+                            onDismiss()
+                            onOpenWelcomeTutorial()
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, PsaCyanGlow.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("help_btn_replay_welcome_tutorial")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayCircleOutline,
+                            contentDescription = null,
+                            tint = PsaCyanGlow,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Ver Tutorial Interactivo (Demo y Cotizador)",
+                            color = PsaCyanGlow,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
 
                     HelpAccordionItem(
                         title = "💧 Precios Reales PSA, 9 Países y DIP",
@@ -542,9 +563,9 @@ fun GeneralSettingsAndHelpDialog(
                     )
 
                     HelpAccordionItem(
-                        title = "💬 Automatización, Scripts y Memoria IA",
-                        summary = "Modo Libre vs Campañas y aprendizaje con estrellas ⭐",
-                        body = "• Modo Libre muestra la burbuja flotante para que elijas manualmente en qué chat escanear o responder.\n" +
+                        title = "🤖 Asistente IA y Memoria de Cierre PSA",
+                        summary = "Recomendaciones de equipos y aprendizaje con estrellas ⭐",
+                        body = "• Consulta al asistente IA dentro de PSA o Demo/Cotizar usando tus precios y test de agua activos.\n" +
                             "• En Memoria IA de PSA, califica con ⭐ Ganadora las respuestas que mejor funcionan para priorizarlas en futuros cierres."
                     )
                 }

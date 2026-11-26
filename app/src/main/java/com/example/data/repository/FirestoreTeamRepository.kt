@@ -25,6 +25,10 @@ import com.example.data.model.PsaPostSaleStatus
 import com.example.data.model.PsaVisitStatus
 import com.example.data.model.RoleVisibilityConfig
 import com.example.data.model.SellerPerformanceStats
+import com.example.data.model.TeamNotification
+import com.example.data.model.TeamNotificationPriority
+import com.example.data.model.TeamNotificationTargetMode
+import com.example.data.model.TeamNotificationType
 import com.example.data.model.UserAccount
 import java.security.SecureRandom
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
@@ -93,6 +97,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         private const val COLLECTION_APP_ERRORS = "AppErrors"
         private const val COLLECTION_ACCESS_TOKENS = "access_tokens"
         private const val COLLECTION_HIERARCHY_REQUESTS = "hierarchy_requests"
+        private const val COLLECTION_TEAM_NOTIFICATIONS = "team_notifications"
         private const val KEY_DEVICE_ID = "persistent_hardware_device_id"
         private const val KEY_LAST_SYNCED_UID = "last_synced_seller_uid"
         const val BOOTSTRAP_ADMIN_EMAIL = "leonelizondo16@gmail.com"
@@ -901,6 +906,55 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         }
     }
 
+    /**
+     * Actualización parcial y directa de bloqueo por actualización requerida en Firestore.
+     * Evita enviar los 21 campos completos del usuario para no tropezar con campos legados.
+     */
+    suspend fun updateUserUpdateLockInCloud(
+        emailRaw: String,
+        updateRequired: Boolean,
+        requiredVersionCode: Int,
+        reason: String
+    ): Result<Unit> {
+        val currentFbUser = auth.currentUser
+            ?: return Result.failure(
+                IllegalStateException("Conecta tu cuenta Google de Superusuario arriba antes de exigir actualizaciones en Firestore.")
+            )
+        val emailKey = normalizeEmail(emailRaw)
+        if (emailKey.isBlank()) {
+            return Result.failure(IllegalArgumentException("Este usuario no tiene un correo Google configurado para sincronizar el bloqueo."))
+        }
+        val payload = hashMapOf<String, Any>(
+            "updateRequired" to updateRequired,
+            "requiredVersionCode" to requiredVersionCode.coerceIn(0, 100000),
+            "updateLockReason" to reason.trim().take(300),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        return try {
+            firestore.collection(COLLECTION_USERS)
+                .document(emailKey)
+                .update(payload)
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("updateUserUpdateLockInCloud", e)
+            val msg = when (e.code) {
+                FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                    "Permiso denegado en Firestore para ${currentFbUser.email ?: "tu cuenta"}. Reconecta tu Google de Superusuario."
+                FirebaseFirestoreException.Code.NOT_FOUND ->
+                    "El usuario $emailKey aún no existe en Firestore (crealo o autorízalo primero en la nube)."
+                else ->
+                    "No se pudo guardar el bloqueo de actualización: ${e.localizedMessage ?: e.code.name}"
+            }
+            Result.failure(Exception(msg))
+        } catch (e: Exception) {
+            handleFirestoreError("updateUserUpdateLockInCloud", e)
+            Result.failure(Exception("No se pudo guardar el bloqueo de actualización: ${e.localizedMessage}"))
+        }
+    }
+
     private fun alignLabelsWithIds(ids: List<String>, labels: List<String>): List<String> {
         return ids.mapIndexed { index, _ ->
             labels.getOrNull(index)?.takeIf { it.isNotBlank() } ?: "Dispositivo ${index + 1}"
@@ -1332,7 +1386,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             "lastMessageAtMs" to stats.lastMessageAtMs.coerceAtLeast(0L),
             "lastActivityAtMs" to stats.lastActivityAtMs.coerceAtLeast(0L),
             "lastActivityLabel" to stats.lastActivityLabel.trim().take(160),
-            "recentActivityJson" to stats.recentActivityJson.ifBlank { "[]" }.take(2500),
+            "recentActivityJson" to stats.recentActivityJson.ifBlank { "[]" }.take(9500),
             "parentEmail" to normalizeEmail(stats.parentEmail).take(120),
             "supervisorChainEmails" to HierarchyTreeBuilder.normalizeChain(stats.supervisorChainEmails),
             "hierarchyDepth" to stats.hierarchyDepth.coerceIn(0, 15),
@@ -2421,6 +2475,210 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             resolvedByEmail = normalizeEmail((data["resolvedByEmail"] as? String).orEmpty()),
             createdAtMs = createdAtMs,
             updatedAtMs = updatedAtMs
+        )
+    }
+
+    // =====================================================================
+    // TEAM NOTIFICATIONS & LEADER COACHING (/team_notifications/{notifId})
+    // =====================================================================
+
+    suspend fun publishTeamNotification(
+        type: TeamNotificationType,
+        priority: TeamNotificationPriority,
+        targetMode: TeamNotificationTargetMode,
+        targetEmailRaw: String = "",
+        title: String,
+        body: String,
+        actionUrl: String = "",
+        requiredVersionCode: Int = 0,
+        senderNameOverride: String = ""
+    ): Result<TeamNotification> {
+        val currentFbUser = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Inicia sesión con Google antes de enviar avisos."))
+        val senderEmail = normalizeEmail(currentFbUser.email.orEmpty())
+        if (senderEmail.isBlank()) {
+            return Result.failure(IllegalStateException("Tu cuenta Google no devolvió un correo válido."))
+        }
+        val cleanTargetEmail = if (targetMode == TeamNotificationTargetMode.USER) {
+            normalizeEmail(targetEmailRaw)
+        } else {
+            ""
+        }
+        if (targetMode == TeamNotificationTargetMode.USER && (!cleanTargetEmail.contains("@") || cleanTargetEmail.length < 5)) {
+            return Result.failure(IllegalArgumentException("Selecciona un destinatario con correo Google válido."))
+        }
+        val cleanTitle = title.trim().take(120)
+        val cleanBody = body.trim().take(1000)
+        if (cleanTitle.isBlank() || cleanBody.isBlank()) {
+            return Result.failure(IllegalArgumentException("Completa título y mensaje antes de enviar."))
+        }
+        val cleanSenderName = senderNameOverride.trim()
+            .ifBlank { currentFbUser.displayName?.trim().orEmpty() }
+            .ifBlank { senderEmail.substringBefore("@") }
+            .take(80)
+        val notifId = "ntf_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        val nowMs = System.currentTimeMillis()
+        val safeUrl = actionUrl.trim().take(500)
+        val safeReqCode = requiredVersionCode.coerceIn(0, 100000)
+
+        val payload = hashMapOf<String, Any>(
+            "id" to notifId,
+            "type" to type.name,
+            "priority" to priority.name,
+            "targetMode" to targetMode.name,
+            "targetEmail" to cleanTargetEmail,
+            "senderEmail" to senderEmail,
+            "senderName" to cleanSenderName,
+            "senderUid" to currentFbUser.uid.take(128),
+            "title" to cleanTitle,
+            "body" to cleanBody,
+            "actionUrl" to safeUrl,
+            "requiredVersionCode" to safeReqCode,
+            "createdAtMs" to nowMs,
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+
+        return try {
+            firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+                .document(notifId)
+                .set(payload)
+                .await()
+            Result.success(
+                TeamNotification(
+                    id = notifId,
+                    type = type.name,
+                    priority = priority.name,
+                    targetMode = targetMode.name,
+                    targetEmail = cleanTargetEmail,
+                    senderEmail = senderEmail,
+                    senderName = cleanSenderName,
+                    senderUid = currentFbUser.uid,
+                    title = cleanTitle,
+                    body = cleanBody,
+                    actionUrl = safeUrl,
+                    requiredVersionCode = safeReqCode,
+                    createdAtMs = nowMs
+                )
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: FirebaseFirestoreException) {
+            handleFirestoreError("publishTeamNotification", e)
+            val msg = when (e.code) {
+                FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                    if (type == TeamNotificationType.LEADER_COACHING) {
+                        "Solo líderes autorizados pueden enviar mensajes a vendedores de su propia rama."
+                    } else {
+                        "Solo el Superusuario puede enviar avisos globales o individuales de administración."
+                    }
+                else -> "Error al enviar notificación: ${e.localizedMessage ?: e.code.name}"
+            }
+            Result.failure(Exception(msg))
+        } catch (e: Exception) {
+            handleFirestoreError("publishTeamNotification", e)
+            Result.failure(Exception("Error al enviar notificación: ${e.localizedMessage}"))
+        }
+    }
+
+    fun observeTeamNotificationsForUser(
+        viewerEmailRaw: String,
+        isSuperuser: Boolean
+    ): Flow<List<TeamNotification>> = callbackFlow {
+        val cleanEmail = normalizeEmail(viewerEmailRaw)
+        if (cleanEmail.isBlank()) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        if (isSuperuser && cleanEmail == BOOTSTRAP_ADMIN_EMAIL) {
+            val reg = firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+                .addSnapshotListener { snap, error ->
+                    if (error != null) {
+                        handleFirestoreError("observeTeamNotifications(admin)", error)
+                        return@addSnapshotListener
+                    }
+                    val list = snap?.documents?.mapNotNull { parseTeamNotification(it) }.orEmpty()
+                        .sortedByDescending { it.createdAtMs }
+                    trySend(list)
+                }
+            awaitClose { reg.remove() }
+            return@callbackFlow
+        }
+
+        val allMap = linkedMapOf<String, TeamNotification>()
+        val directMap = linkedMapOf<String, TeamNotification>()
+        val sentMap = linkedMapOf<String, TeamNotification>()
+
+        fun emitMerged() {
+            val merged = (allMap.values + directMap.values + sentMap.values)
+                .distinctBy { it.id }
+                .sortedByDescending { it.createdAtMs }
+            trySend(merged)
+        }
+
+        val regAll = firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+            .whereEqualTo("targetMode", TeamNotificationTargetMode.ALL.name)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    handleFirestoreError("observeTeamNotifications(all)", error)
+                    return@addSnapshotListener
+                }
+                allMap.clear()
+                snap?.documents?.mapNotNull { parseTeamNotification(it) }?.forEach { allMap[it.id] = it }
+                emitMerged()
+            }
+
+        val regDirect = firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+            .whereEqualTo("targetEmail", cleanEmail)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    handleFirestoreError("observeTeamNotifications(direct)", error)
+                    return@addSnapshotListener
+                }
+                directMap.clear()
+                snap?.documents?.mapNotNull { parseTeamNotification(it) }?.forEach { directMap[it.id] = it }
+                emitMerged()
+            }
+
+        val regSent = firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+            .whereEqualTo("senderEmail", cleanEmail)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    handleFirestoreError("observeTeamNotifications(sent)", error)
+                    return@addSnapshotListener
+                }
+                sentMap.clear()
+                snap?.documents?.mapNotNull { parseTeamNotification(it) }?.forEach { sentMap[it.id] = it }
+                emitMerged()
+            }
+
+        awaitClose {
+            regAll.remove()
+            regDirect.remove()
+            regSent.remove()
+        }
+    }
+
+    private fun parseTeamNotification(doc: DocumentSnapshot): TeamNotification? {
+        val data = doc.data ?: return null
+        val id = (data["id"] as? String).orEmpty().ifBlank { doc.id }
+        val serverMs = doc.getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time ?: 0L
+        val rawMs = (data["createdAtMs"] as? Number)?.toLong() ?: 0L
+        return TeamNotification(
+            id = id,
+            type = (data["type"] as? String).orEmpty().ifBlank { TeamNotificationType.SUPERUSER_GLOBAL.name },
+            priority = (data["priority"] as? String).orEmpty().ifBlank { TeamNotificationPriority.INFO.name },
+            targetMode = (data["targetMode"] as? String).orEmpty().ifBlank { TeamNotificationTargetMode.ALL.name },
+            targetEmail = normalizeEmail((data["targetEmail"] as? String).orEmpty()),
+            senderEmail = normalizeEmail((data["senderEmail"] as? String).orEmpty()),
+            senderName = (data["senderName"] as? String).orEmpty(),
+            senderUid = (data["senderUid"] as? String).orEmpty(),
+            title = (data["title"] as? String).orEmpty(),
+            body = (data["body"] as? String).orEmpty(),
+            actionUrl = (data["actionUrl"] as? String).orEmpty(),
+            requiredVersionCode = ((data["requiredVersionCode"] as? Number)?.toInt() ?: 0).coerceIn(0, 100000),
+            createdAtMs = maxOf(rawMs, serverMs)
         )
     }
 }

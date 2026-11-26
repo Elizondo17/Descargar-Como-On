@@ -462,6 +462,32 @@
         "androidSdk", "appVersionName", "appVersionCode", "status",
         "occurredAtMs", "createdAt", "updatedAt"
       ]
+    },
+    "TeamNotification": {
+      "title": "TeamNotification",
+      "description": "Unified notifications for app updates, superuser global/direct banners, and leader coaching encouragement messages.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["APP_UPDATE", "SUPERUSER_GLOBAL", "SUPERUSER_DIRECT", "LEADER_COACHING"] },
+        "priority": { "type": "string", "enum": ["INFO", "IMPORTANT", "URGENT"] },
+        "targetMode": { "type": "string", "enum": ["ALL", "USER"] },
+        "targetEmail": { "type": "string" },
+        "senderEmail": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "actionUrl": { "type": "string" },
+        "requiredVersionCode": { "type": "integer" },
+        "createdAtMs": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "type", "priority", "targetMode", "targetEmail",
+        "senderEmail", "senderName", "senderUid", "title", "body",
+        "createdAtMs", "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -500,6 +526,10 @@
     "/AppErrors/{errorId}": {
       "schema": { "$ref": "#/entities/AppErrorReport" },
       "description": "Real-time Firebase initialization and Logcat errors captured from seller devices and monitored by Superuser"
+    },
+    "/team_notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/TeamNotification" },
+      "description": "Global/individual admin alerts, app update notices, and leader-to-seller encouragement messages"
     }
   }
 }

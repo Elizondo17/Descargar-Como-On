@@ -16,16 +16,22 @@ class NotificationHelper(private val context: Context) {
     companion object {
         const val CHANNEL_ID = "ezo_crm_automation"
         const val CHANNEL_NAME = "EzoCRM Automatizaciones"
-        const val CHANNEL_DESC = "Notificaciones en tiempo real de envíos, retrasos y fallos en EzoCRM"
+        const val CHANNEL_DESC = "Notificaciones en tiempo real de envíos, retrasos y fallos"
+
+        const val CHANNEL_TEAM_UPDATES = "como_on_team_updates"
+        const val CHANNEL_ANNOUNCEMENTS = "como_on_team_announcements"
+        const val CHANNEL_CALL_REMINDERS = "como_on_call_reminders"
     }
 
     init {
-        createNotificationChannel()
+        createNotificationChannels()
     }
 
-    private fun createNotificationChannel() {
+    private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+
+            val defaultChannel = NotificationChannel(
                 CHANNEL_ID,
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_HIGH
@@ -33,8 +39,37 @@ class NotificationHelper(private val context: Context) {
                 description = CHANNEL_DESC
                 enableVibration(true)
             }
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            manager?.createNotificationChannel(channel)
+
+            val updatesChannel = NotificationChannel(
+                CHANNEL_TEAM_UPDATES,
+                "Actualizaciones Como On",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alertas cuando el Administrador publica una nueva versión"
+                enableVibration(true)
+            }
+
+            val announcementsChannel = NotificationChannel(
+                CHANNEL_ANNOUNCEMENTS,
+                "Avisos y Equipo PSA",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Avisos del Administrador y mensajes de aliento de tu líder de equipo"
+                enableVibration(true)
+            }
+
+            val remindersChannel = NotificationChannel(
+                CHANNEL_CALL_REMINDERS,
+                "Recordatorios de Llamadas",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Avisos programados para realizar bloques de llamadas o contactar en horario pico"
+                enableVibration(true)
+            }
+
+            manager.createNotificationChannels(
+                listOf(defaultChannel, updatesChannel, announcementsChannel, remindersChannel)
+            )
         }
     }
 
@@ -71,49 +106,13 @@ class NotificationHelper(private val context: Context) {
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("⚠️ Fallo en envío a $recipient")
             .setContentText("Motivo: $reason")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("Error al enviar en EzoCRM a $recipient.\nMotivo: $reason"))
+            .setStyle(NotificationCompat.BigTextStyle().bigText("Error al enviar a $recipient.\nMotivo: $reason"))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()
 
         try {
             NotificationManagerCompat.from(context).notify(recipient.hashCode(), notification)
-        } catch (_: SecurityException) {
-            // Permission might be pending
-        }
-    }
-
-    fun showBankingModeNotification() {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("ACTION_RESTORE_BUBBLE", true)
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            999,
-            intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("🏦 Modo Banco Activo • Como On en reposo")
-            .setContentText("Superposiciones ocultadas. Toca aquí para reactivar la burbuja.")
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(true)
-            .setContentIntent(pendingIntent)
-            .build()
-
-        try {
-            NotificationManagerCompat.from(context).notify(99999, notification)
-        } catch (_: SecurityException) {
-            // Permission might be pending
-        }
-    }
-
-    fun dismissBankingModeNotification() {
-        try {
-            NotificationManagerCompat.from(context).cancel(99999)
         } catch (_: SecurityException) {
             // Permission might be pending
         }
@@ -195,6 +194,91 @@ class NotificationHelper(private val context: Context) {
         try {
             NotificationManagerCompat.from(context).notify(
                 ("postsale_$recordId").hashCode(),
+                notification
+            )
+        } catch (_: SecurityException) {
+            // Permission not granted yet
+        }
+    }
+
+    fun showTeamNotificationAlert(
+        notifId: String,
+        title: String,
+        body: String,
+        isAppUpdate: Boolean = false,
+        senderName: String = ""
+    ) {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("OPEN_TEAM_NOTIF_ID", notifId)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            ("team_notif_$notifId").hashCode(),
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val channelId = if (isAppUpdate) CHANNEL_TEAM_UPDATES else CHANNEL_ANNOUNCEMENTS
+        val displayTitle = if (senderName.isNotBlank() && !isAppUpdate) {
+            "$title • $senderName"
+        } else {
+            title
+        }
+
+        val notification = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(displayTitle)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(
+                ("team_notif_$notifId").hashCode(),
+                notification
+            )
+        } catch (_: SecurityException) {
+            // Permission not granted yet
+        }
+    }
+
+    fun showCallReminderNotification(
+        reminderId: String,
+        title: String,
+        body: String
+    ) {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("OPEN_PSA_CONTACTS", true)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            ("call_rem_$reminderId").hashCode(),
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_CALL_REMINDERS)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(title.ifBlank { "📞 Momento de Llamadas PSA" })
+            .setContentText(body.ifBlank { "Es tu horario programado para contactar clientes y agendar demos." })
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    body.ifBlank { "Es tu horario programado para contactar clientes y agendar demos." }
+                )
+            )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(
+                ("call_rem_$reminderId").hashCode(),
                 notification
             )
         } catch (_: SecurityException) {

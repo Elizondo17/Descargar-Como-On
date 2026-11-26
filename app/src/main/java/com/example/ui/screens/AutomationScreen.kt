@@ -1,14 +1,11 @@
 package com.example.ui.screens
 
 import android.app.DatePickerDialog
-import android.content.Intent
-import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.draw.scale
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,25 +41,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Accessibility
-import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -73,14 +61,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Launch
-import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Send
-import com.example.data.model.ScriptFolder
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -110,7 +92,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AutomationState
 import com.example.data.model.ScriptItem
-import com.example.service.EzoAccessibilityService
 import com.example.ui.theme.AmberDelay
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IndigoPrimary
@@ -139,12 +120,6 @@ fun AutomationScreen(
     val allScripts by viewModel.allScripts.collectAsState()
     val progress by viewModel.automationProgress.collectAsState()
     val config by viewModel.automationConfig.collectAsState()
-    val isAccessibilityActive by viewModel.isAccessibilityConnected.collectAsState()
-    val isBubbleVisible by viewModel.isBubbleVisible.collectAsState()
-    val isBankingMode by viewModel.isBankingMode.collectAsState()
-    val isAppPaused by viewModel.isAppPaused.collectAsState()
-    val selectedChatsReadyCount by viewModel.selectedChatsReadyCount.collectAsState()
-    var showKillSwitchConfirmDialog by remember { mutableStateOf(false) }
 
     val scannedChats by viewModel.allScannedChats.collectAsState()
     val selectedChats by viewModel.selectedScannedChats.collectAsState()
@@ -152,12 +127,6 @@ fun AutomationScreen(
     val isAiLoading by viewModel.isAiLoading.collectAsState()
     val smartResponses by viewModel.smartResponses.collectAsState()
 
-    val detectedCrmApp by viewModel.detectedCrmApp.collectAsState()
-    val isCrmWindowActive by viewModel.isCrmWindowActive.collectAsState()
-    val visibleChatsCount by viewModel.visibleChatsCount.collectAsState()
-    val lastDetectedWindowTitle by viewModel.lastDetectedWindowTitle.collectAsState()
-    val activeCrmFolder by viewModel.activeCrmFolder.collectAsState()
-    val scannedCrmFolders by viewModel.scannedCrmFolders.collectAsState()
     var folderFilter by remember { mutableStateOf<String?>(null) }
 
     val isSuperUser = currentUser?.role == "SUPERUSER"
@@ -166,7 +135,6 @@ fun AutomationScreen(
     var showAiResponseDialog by remember { mutableStateOf(false) }
     var activeAiChatTarget by remember { mutableStateOf<ScannedChat?>(null) }
     var customAiPrompt by remember { mutableStateOf("") }
-    var showRemoteAccessInfo by remember { mutableStateOf(false) }
     var showUnattendedLogsDialog by remember { mutableStateOf(false) }
 
     // Folder & Script selection states requested by user
@@ -201,7 +169,6 @@ fun AutomationScreen(
     var calendarDateFilter by remember { mutableStateOf("") }
     var quickDateFilter by remember { mutableStateOf("TODAS") } // "TODAS", "HOY", "AYER"
     var statusFilter by remember { mutableStateOf("TODOS") } // "TODOS", "ELEGIBLES", "PENDIENTES", "ENVIADOS"
-    var userDismissedAccessibilityBanner by remember { mutableStateOf(false) }
 
     var sliderDelayRange by remember {
         mutableStateOf(config.minDelaySeconds.toFloat()..config.maxDelaySeconds.toFloat())
@@ -220,17 +187,9 @@ fun AutomationScreen(
     var testCustomerMessage by remember { mutableStateOf("") }
     var notifyOnEverySuccess by remember { mutableStateOf(config.notifyOnEverySuccess) }
 
-    var autoLaunchAppOnBubble by remember { mutableStateOf(false) }
-    var selectedPackageToLaunch by remember { mutableStateOf("com.whatsapp") }
-    var customPackageInput by remember { mutableStateOf("") }
-
     val isRunning = progress.state == AutomationState.WAITING_DELAY ||
             progress.state == AutomationState.SENDING ||
             progress.state == AutomationState.SCANNING
-
-    val isAccessibilitySystemEnabled = remember(isAccessibilityActive) {
-        isAccessibilityActive || EzoAccessibilityService.isAccessibilityEnabledInSettings(context)
-    }
 
     // Dynamic filtering for eligible chats
     val filteredChats = remember(scannedChats, keywordFilter, calendarDateFilter, quickDateFilter, statusFilter) {
@@ -271,541 +230,8 @@ fun AutomationScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Operational Header: Modo Pausa & Kill Switch Bancos
-        item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(SlateCard)
-                    .border(1.dp, SlateCardBorder, RoundedCornerShape(16.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-            ) {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    // Modo Pausa Switch
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .background(if (isAppPaused) AmberDelay.copy(alpha = 0.2f) else SlateBackground),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Pause,
-                                contentDescription = null,
-                                tint = if (isAppPaused) AmberDelay else TextMuted,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = "Modo Pausa",
-                                fontWeight = FontWeight.Bold,
-                                color = if (isAppPaused) AmberDelay else TextPrimary,
-                                fontSize = 12.sp
-                            )
-                            Text(
-                                text = if (isAppPaused) "Campaña pausada" else "Envío activo",
-                                color = if (isAppPaused) AmberDelay else TextMuted,
-                                fontSize = 10.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Switch(
-                            checked = isAppPaused,
-                            onCheckedChange = { paused ->
-                                viewModel.setAppPaused(context, paused)
-                                android.widget.Toast.makeText(
-                                    context,
-                                    if (paused) "⏸️ Modo Pausa activado: Campañas y burbujas en pausa" else "▶️ Modo Pausa desactivado",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            },
-                            modifier = Modifier
-                                .scale(0.75f)
-                                .testTag("automation_pause_switch"),
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = AmberDelay,
-                                checkedTrackColor = AmberDelay.copy(alpha = 0.35f),
-                                uncheckedThumbColor = TextMuted,
-                                uncheckedTrackColor = SlateBackground
-                            )
-                        )
-                    }
-
-                    // Kill Switch Button
-                    Button(
-                        onClick = { showKillSwitchConfirmDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = RoseError),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .heightIn(min = 36.dp)
-                            .testTag("automation_kill_switch_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PowerSettingsNew,
-                            contentDescription = "Kill Switch Bancos",
-                            modifier = Modifier.size(14.dp),
-                            tint = Color.White
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("KILL BANCOS", fontSize = 10.5.sp, fontWeight = FontWeight.Black)
-                    }
-                }
-            }
-        }
-
-
-
-        // Remote Access & Modo Banco Card (1-touch protection against banking app blocks)
-        item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (isBankingMode) Color(0xFF450A0A) else SlateCard)
-                    .border(
-                        1.dp,
-                        if (isBankingMode) RoseError else IndigoPrimary.copy(alpha = 0.35f),
-                        RoundedCornerShape(16.dp)
-                    )
-                    .padding(14.dp)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FlowRow(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f, fill = false)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isBankingMode) RoseError.copy(alpha = 0.2f) else IndigoPrimary.copy(alpha = 0.15f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = if (isBankingMode) Icons.Default.Lock else Icons.Default.Info,
-                                    contentDescription = null,
-                                    tint = if (isBankingMode) RoseError else IndigoPrimary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(10.dp))
-
-                            Column {
-                                Text(
-                                    text = if (isBankingMode) "🏦 Modo Banco ACTIVO" else "🏦 Modo Banco",
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
-                                Text(
-                                    text = if (isBankingMode) "Superposiciones ocultas" else "Oculta burbuja al abrir banco",
-                                    color = if (isBankingMode) EmeraldSuccess else TextSecondary,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedButton(
-                                onClick = {
-                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                                    context.startActivity(intent)
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = IndigoPrimary),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                modifier = Modifier.heightIn(min = 36.dp)
-                            ) {
-                                Icon(imageVector = Icons.Default.Accessibility, contentDescription = "Ajustes", modifier = Modifier.size(14.dp))
-                            }
-
-                            Button(
-                                onClick = {
-                                    if (isBankingMode) {
-                                        viewModel.disableBankingMode()
-                                    } else {
-                                        viewModel.enableBankingMode()
-                                    }
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isBankingMode) EmeraldSuccess else Color(0xFF7F1D1D)
-                                ),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                modifier = Modifier.heightIn(min = 36.dp)
-                            ) {
-                                Text(
-                                    text = if (isBankingMode) "Restaurar" else "Ocultar",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Floating Bubble Launcher Card (Only launches the bubble, never opens external apps by default)
-        item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(SlateCard)
-                    .border(
-                        1.dp,
-                        if (isBubbleVisible) EmeraldSuccess.copy(alpha = 0.4f) else IndigoPrimary.copy(alpha = 0.35f),
-                        RoundedCornerShape(16.dp)
-                    )
-                    .padding(14.dp)
-            ) {
-                Column {
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f, fill = false)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isBubbleVisible) EmeraldSuccess.copy(alpha = 0.15f) else IndigoPrimary.copy(alpha = 0.15f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.BubbleChart,
-                                    contentDescription = null,
-                                    tint = if (isBubbleVisible) EmeraldSuccess else IndigoPrimary,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(12.dp))
-
-                            Column {
-                                Text(
-                                    text = if (isBubbleVisible) "Burbuja Flotante ACTIVA" else "Burbuja Flotante",
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                                Text(
-                                    text = "Modo Libre sobre CRM",
-                                    color = TextSecondary,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-
-                        Button(
-                            onClick = {
-                                val willBeVisible = !isBubbleVisible
-                                viewModel.toggleFloatingBubble(context, willBeVisible)
-                                if (willBeVisible && autoLaunchAppOnBubble) {
-                                    val targetPkg = if (selectedPackageToLaunch == "custom") customPackageInput.trim() else selectedPackageToLaunch
-                                    if (targetPkg.isNotBlank()) {
-                                        try {
-                                            val intent = context.packageManager.getLaunchIntentForPackage(targetPkg)
-                                            if (intent != null) {
-                                                context.startActivity(intent)
-                                            } else {
-                                                Toast.makeText(context, "No se encontró instalada: $targetPkg", Toast.LENGTH_SHORT).show()
-                                            }
-                                        } catch (e: Exception) {
-                                            Toast.makeText(context, "Error al abrir app: ${e.message}", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isBubbleVisible) RoseError.copy(alpha = 0.85f) else IndigoPrimary
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.heightIn(min = 38.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isBubbleVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (isBubbleVisible) "Ocultar" else "Lanzar",
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Optional app opening toggle requested by user
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { autoLaunchAppOnBubble = !autoLaunchAppOnBubble }
-                            .padding(vertical = 4.dp, horizontal = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Abrir una app al lanzar la burbuja (Opcional)",
-                                color = TextPrimary,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = if (autoLaunchAppOnBubble) "Activado: abrirá la app elegida" else "Desactivado por defecto (solo flota la burbuja)",
-                                color = if (autoLaunchAppOnBubble) PurpleNeon else TextMuted,
-                                fontSize = 10.sp
-                            )
-                        }
-                        Switch(
-                            checked = autoLaunchAppOnBubble,
-                            onCheckedChange = { autoLaunchAppOnBubble = it },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = IndigoPrimary,
-                                uncheckedThumbColor = TextMuted,
-                                uncheckedTrackColor = SlateBackground
-                            )
-                        )
-                    }
-
-                    if (autoLaunchAppOnBubble) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            FilterChip(
-                                selected = selectedPackageToLaunch == "com.whatsapp",
-                                onClick = { selectedPackageToLaunch = "com.whatsapp" },
-                                label = { Text("WhatsApp", fontSize = 11.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = IndigoPrimary.copy(alpha = 0.25f),
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                            FilterChip(
-                                selected = selectedPackageToLaunch == "com.whatsapp.w4b",
-                                onClick = { selectedPackageToLaunch = "com.whatsapp.w4b" },
-                                label = { Text("WA Business", fontSize = 11.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = IndigoPrimary.copy(alpha = 0.25f),
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                            FilterChip(
-                                selected = selectedPackageToLaunch == "custom",
-                                onClick = { selectedPackageToLaunch = "custom" },
-                                label = { Text("Otro CRM", fontSize = 11.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = IndigoPrimary.copy(alpha = 0.25f),
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                        }
-
-                        if (selectedPackageToLaunch == "custom") {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            OutlinedTextField(
-                                value = customPackageInput,
-                                onValueChange = { customPackageInput = it },
-                                label = { Text("Package Name de tu CRM (ej. com.mi.crm)", fontSize = 11.sp) },
-                                placeholder = { Text("com.ejemplo.crm", fontSize = 11.sp) },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = IndigoPrimary,
-                                    unfocusedBorderColor = SlateCardBorder
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
         // =========================================================================
-        // DETECCIÓN DE VENTANA DEL CRM & ESTADO EN TIEMPO REAL
-        // =========================================================================
-        item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (isCrmWindowActive) EmeraldSuccess.copy(alpha = 0.08f) else SlateCard)
-                    .border(
-                        1.dp,
-                        if (isCrmWindowActive) EmeraldSuccess.copy(alpha = 0.4f) else SlateCardBorder,
-                        RoundedCornerShape(16.dp)
-                    )
-                    .padding(14.dp)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isCrmWindowActive) EmeraldSuccess else TextMuted)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = if (isCrmWindowActive) "Ventana CRM Activa: $detectedCrmApp" else "Detector de Ventanas CRM",
-                                color = if (isCrmWindowActive) EmeraldSuccess else TextPrimary,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        if (isCrmWindowActive && visibleChatsCount > 0) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(EmeraldSuccess.copy(alpha = 0.2f))
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
-                            ) {
-                                Text(
-                                    text = "$visibleChatsCount en pantalla",
-                                    color = EmeraldSuccess,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    // Active Folder Indicator & Detected Folders
-                    if (isCrmWindowActive) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Folder,
-                                    contentDescription = null,
-                                    tint = if (activeCrmFolder != "General") EmeraldSuccess else IndigoPrimary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Carpeta activa en CRM: ${if (activeCrmFolder != "General") activeCrmFolder else "General (Lista Principal)"}",
-                                    color = TextPrimary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-
-                            if (scannedCrmFolders.isNotEmpty()) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Text("Carpetas detectadas:", color = TextSecondary, fontSize = 10.sp)
-                                    scannedCrmFolders.take(4).forEach { folder ->
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(if (folder.name.equals(activeCrmFolder, ignoreCase = true)) EmeraldSuccess.copy(alpha = 0.25f) else SlateBackground)
-                                                .padding(horizontal = 5.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = folder.name,
-                                                color = if (folder.name.equals(activeCrmFolder, ignoreCase = true)) EmeraldSuccess else TextSecondary,
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Text(
-                        text = if (isCrmWindowActive) {
-                            "Carpeta '$activeCrmFolder' activa en $detectedCrmApp."
-                        } else {
-                            "Abre tu CRM/WhatsApp en la carpeta deseada y escanea."
-                        },
-                        color = TextSecondary,
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp
-                    )
-
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                viewModel.scanCrmScreenNow(autoScroll = true)
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isCrmWindowActive) EmeraldSuccess else IndigoPrimary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .let { if (isLargeFont) it.fillMaxWidth() else it.weight(1f) }
-                                .heightIn(min = 40.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.Search, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (isCrmWindowActive) "Escanear '$activeCrmFolder'" else "Escanear Pantalla",
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        if (scannedChats.isNotEmpty()) {
-                            OutlinedButton(
-                                onClick = { viewModel.clearScannedChats() },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted),
-                                modifier = Modifier
-                                    .let { if (isLargeFont) it.fillMaxWidth() else it }
-                                    .heightIn(min = 40.dp)
-                            ) {
-                                Text("Limpiar (${scannedChats.size})", fontSize = 11.5.sp)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // =========================================================================
-        // PASO 1: CHATS ESCANEADOS Y FILTROS DE ELEGIBILIDAD
+        // PASO 1: CHATS ELEGIBLES Y FILTROS DE ELEGIBILIDAD
         // =========================================================================
         item {
             Box(
@@ -1064,21 +490,9 @@ fun AutomationScreen(
 
                         FlowRow(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.End,
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            OutlinedButton(
-                                onClick = { viewModel.scanCrmScreenNow(autoScroll = true) },
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldSuccess),
-                                modifier = Modifier.heightIn(min = 36.dp)
-                            ) {
-                                Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(13.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Escanear Pantalla", fontSize = 11.sp)
-                            }
-
                             OutlinedButton(
                                 onClick = { viewModel.clearScannedChats() },
                                 shape = RoundedCornerShape(8.dp),
@@ -1279,7 +693,7 @@ fun AutomationScreen(
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = if (scannedChats.isEmpty())
-                                "Lanza la burbuja flotante sobre tu CRM/WhatsApp y pulsa 'Escanear Pantalla CRM' para capturar los chats automáticamente."
+                                "No hay destinatarios cargados en la lista de envíos en este momento."
                             else "Modifica la palabra clave, el filtro de calendario o el estado para visualizar más chats.",
                             color = TextMuted,
                             fontSize = 11.sp,
@@ -2700,62 +2114,6 @@ fun AutomationScreen(
                     ) {
                         Text("Cerrar")
                     }
-                }
-            },
-            containerColor = SlateCard,
-            shape = RoundedCornerShape(16.dp)
-        )
-    }
-
-    if (showKillSwitchConfirmDialog) {
-        AlertDialog(
-            onDismissRequest = { showKillSwitchConfirmDialog = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Shield,
-                    contentDescription = null,
-                    tint = RoseError,
-                    modifier = Modifier.size(36.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "🛡️ Activar Kill Switch (Bancos)",
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary,
-                    fontSize = 16.sp
-                )
-            },
-            text = {
-                Text(
-                    text = "¿Deseas desactivar inmediatamente los servicios de accesibilidad, superposiciones y notificaciones de Como On para ingresar a apps bancarias (Banco Nación, etc.) de forma segura?",
-                    color = TextSecondary,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showKillSwitchConfirmDialog = false
-                        val disabled = viewModel.executeKillSwitch(context)
-                        if (disabled) {
-                            android.widget.Toast.makeText(
-                                context,
-                                "🛡️ Kill Switch: Accesibilidad apagada. Seguro para bancos.",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = RoseError),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("APAGAR TODO", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showKillSwitchConfirmDialog = false }) {
-                    Text("Cancelar", color = TextMuted)
                 }
             },
             containerColor = SlateCard,

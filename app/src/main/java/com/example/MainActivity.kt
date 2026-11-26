@@ -38,10 +38,10 @@ import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExitToApp
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.foundation.layout.Arrangement
@@ -61,17 +61,33 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.ui.draw.scale
 import com.example.ui.theme.AmberDelay
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import android.provider.Settings
 import android.widget.Toast
+import com.example.data.model.TeamNotification
+import com.example.data.model.TeamNotificationPriority
+import com.example.data.model.TeamNotificationType
 import com.example.data.model.UserAccount
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.example.ui.theme.RoseError
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.SlateCardBorder
@@ -144,7 +160,6 @@ class MainActivity : ComponentActivity() {
             com.example.util.CriticalNotificationHelper.ensureNotificationChannel(this)
             com.example.service.EzoFirebaseMessagingService.subscribeToCriticalAlertsTopic()
         }
-        handleBankingModeIntent(intent)
         setContent {
             val viewModel: MainViewModel = viewModel()
             val fontScaleLevel by viewModel.fontScaleLevel.collectAsState()
@@ -157,13 +172,6 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleBankingModeIntent(intent)
-    }
-
-    private fun handleBankingModeIntent(intent: android.content.Intent?) {
-        if (intent?.getBooleanExtra("ACTION_RESTORE_BUBBLE", false) == true) {
-            com.example.service.EzoAccessibilityService.disableBankingMode()
-        }
     }
 }
 
@@ -171,13 +179,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainApp(viewModel: MainViewModel = viewModel()) {
     val currentUser by viewModel.currentUser.collectAsState()
-    val isAppPaused by viewModel.isAppPaused.collectAsState()
-    val isBankingMode by viewModel.isBankingMode.collectAsState()
-    val killSwitchTriggered by viewModel.killSwitchTriggered.collectAsState()
-    val isAccessibilityConnected by viewModel.isAccessibilityConnected.collectAsState()
     val fontScaleLevel by viewModel.fontScaleLevel.collectAsState()
     val hasSeenSetupGuide by viewModel.hasSeenSetupGuide.collectAsState()
+    val hasSeenWelcomeTutorial by viewModel.hasSeenWelcomeTutorial.collectAsState()
     val activePsaCountry by viewModel.activePsaCountry.collectAsState()
+    val psaPricingConfig by viewModel.psaPricingConfig.collectAsState()
+    val psaFinancingConfig by viewModel.psaFinancingConfig.collectAsState()
     val licenseEvaluation by viewModel.licenseEvaluation.collectAsState()
     val isNetworkOnline by viewModel.isNetworkOnline.collectAsState()
     val lockVerificationFeedback by viewModel.lockVerificationFeedback.collectAsState()
@@ -190,15 +197,22 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
     val appUpdateCheckFeedback by viewModel.appUpdateCheckFeedback.collectAsState()
     val isAppDistributionSignedIn by viewModel.isAppDistributionTesterSignedIn.collectAsState()
     val visibleHierarchyUsers by viewModel.visibleHierarchyUsers.collectAsState()
+    val teamNotifications by viewModel.teamNotifications.collectAsState()
+    val readNotificationIds by viewModel.readNotificationIds.collectAsState()
+    val unreadNotificationsCount by viewModel.unreadNotificationsCount.collectAsState()
+    val activePriorityBanner by viewModel.activePriorityBanner.collectAsState()
+    val teamNotificationFeedback by viewModel.teamNotificationFeedback.collectAsState()
     val isLargeFont = com.example.ui.theme.LocalIsLargeFontMode.current
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var showKillSwitchConfirmDialog by remember { mutableStateOf(false) }
+    var showNotificationsSheet by remember { mutableStateOf(false) }
     var showSettingsAndHelpDialog by remember { mutableStateOf(false) }
     var showExpiringRenewDialog by remember { mutableStateOf(false) }
+    var showWelcomeTutorialManual by remember { mutableStateOf(false) }
 
     var currentTab by remember { mutableStateOf(AppTab.PSA_WORKSPACE) }
     var pendingPsaConfigAction by remember { mutableStateOf<com.example.ui.screens.psa.PsaConfigAction?>(null) }
+    var pendingPsaTargetTab by remember { mutableStateOf<com.example.ui.screens.psa.PsaWorkspaceTab?>(null) }
     var showHierarchyScreen by remember { mutableStateOf(false) }
     var hierarchyInspectEmail by remember { mutableStateOf<String?>(null) }
     var scriptForAutomation by remember { mutableStateOf<ScriptItem?>(null) }
@@ -246,6 +260,14 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
         if (!msg.isNullOrBlank()) {
             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             viewModel.clearAppUpdateCheckFeedback()
+        }
+    }
+
+    LaunchedEffect(teamNotificationFeedback) {
+        val msg = teamNotificationFeedback
+        if (!msg.isNullOrBlank()) {
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            viewModel.clearTeamNotificationFeedback()
         }
     }
 
@@ -475,7 +497,7 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
 
     val showDashboard = (roleMatrix.isTabVisible("DASHBOARD", isSuperuser) && canAccessLegacy) || canManageHierarchy
     val showScripts = roleMatrix.isTabVisible("SCRIPTS", isSuperuser) && canAccessLegacy
-    val showAutomation = roleMatrix.isTabVisible("AUTOMATION", isSuperuser) && canAccessLegacy
+    val showAutomation = isSuperuser && roleMatrix.isTabVisible("AUTOMATION", true)
     val showPsa = roleMatrix.isTabVisible("PSA_WORKSPACE", isSuperuser)
     val showSuperuser = isSuperuser && roleMatrix.isTabVisible("SUPERUSER", true)
 
@@ -590,6 +612,34 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                 },
                 actions = {
                     IconButton(
+                        onClick = { showNotificationsSheet = true },
+                        modifier = Modifier.testTag("notifications_bell_button")
+                    ) {
+                        BadgedBox(
+                            badge = {
+                                if (unreadNotificationsCount > 0) {
+                                    Badge(
+                                        containerColor = RoseError,
+                                        contentColor = Color.White
+                                    ) {
+                                        Text(
+                                            text = if (unreadNotificationsCount > 99) "99+" else unreadNotificationsCount.toString(),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Notifications,
+                                contentDescription = "Avisos y Notificaciones",
+                                tint = if (unreadNotificationsCount > 0) com.example.ui.theme.PsaCyanGlow else TextSecondary
+                            )
+                        }
+                    }
+
+                    IconButton(
                         onClick = { showSettingsAndHelpDialog = true },
                         modifier = Modifier.testTag("settings_help_dialog_button")
                     ) {
@@ -623,121 +673,140 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Safety status banner for Kill Switch / Modo Pausa
-            if (killSwitchTriggered || (isBankingMode && !isAccessibilityConnected)) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(RoseError.copy(alpha = 0.15f))
-                        .border(1.dp, RoseError.copy(alpha = 0.4f))
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Shield,
-                                contentDescription = null,
-                                tint = RoseError,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = "🛡️ Modo Banco Seguro",
-                                    color = RoseError,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
-                                Text(
-                                    text = "Accesibilidad apagada.",
-                                    color = TextSecondary,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                        if (!isLargeFont) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = { viewModel.openAccessibilitySettings(context) },
-                                colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                shape = RoundedCornerShape(6.dp)
-                            ) {
-                                Text("Reactivar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                    if (isLargeFont) {
-                        Button(
-                            onClick = { viewModel.openAccessibilitySettings(context) },
-                            colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
-                            shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Reactivar", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
+            val priorityBanner = activePriorityBanner
+            if (priorityBanner != null) {
+                val accentColor = when {
+                    priorityBanner.parsedPriority == TeamNotificationPriority.URGENT -> RoseError
+                    priorityBanner.parsedType == TeamNotificationType.APP_UPDATE -> com.example.ui.theme.PsaCyanGlow
+                    priorityBanner.parsedType == TeamNotificationType.LEADER_COACHING -> EmeraldSuccess
+                    priorityBanner.parsedPriority == TeamNotificationPriority.IMPORTANT -> AmberDelay
+                    else -> IndigoPrimary
                 }
-            } else if (isAppPaused) {
-                Column(
+                val bannerEmoji = when (priorityBanner.parsedType) {
+                    TeamNotificationType.APP_UPDATE -> "🚀"
+                    TeamNotificationType.SUPERUSER_GLOBAL -> "📢"
+                    TeamNotificationType.SUPERUSER_DIRECT -> "📩"
+                    TeamNotificationType.LEADER_COACHING -> "💬"
+                }
+                val bannerActionUrl = priorityBanner.actionUrl.ifBlank { resolvedApkDownloadUrl }
+                Surface(
+                    color = accentColor.copy(alpha = 0.14f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, accentColor.copy(alpha = 0.6f)),
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(AmberDelay.copy(alpha = 0.15f))
-                        .border(1.dp, AmberDelay.copy(alpha = 0.4f))
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .testTag("team_priority_banner")
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Pause,
-                                contentDescription = null,
-                                tint = AmberDelay,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "⏸️ Modo Pausa Activo",
-                                color = AmberDelay,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
-                            )
-                        }
-                        if (!isLargeFont) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = { viewModel.setAppPaused(context, false) },
-                                colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                shape = RoundedCornerShape(6.dp)
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text("Reanudar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "$bannerEmoji ${priorityBanner.parsedType.label}",
+                                    color = accentColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                                if (priorityBanner.senderName.isNotBlank()) {
+                                    Text(
+                                        text = "• ${priorityBanner.senderName}",
+                                        color = TextSecondary,
+                                        fontSize = 10.5.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = {
+                                    viewModel.markNotificationRead(priorityBanner.id)
+                                    viewModel.dismissPriorityBanner(priorityBanner.id)
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Cerrar aviso",
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
-                    }
-                    if (isLargeFont) {
-                        Button(
-                            onClick = { viewModel.setAppPaused(context, false) },
-                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
-                            shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.fillMaxWidth()
+                        if (priorityBanner.title.isNotBlank()) {
+                            Text(
+                                text = priorityBanner.title,
+                                color = TextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (priorityBanner.body.isNotBlank()) {
+                            Text(
+                                text = priorityBanner.body,
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                maxLines = if (isLargeFont) 4 else 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text("Reanudar", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            if (priorityBanner.parsedType == TeamNotificationType.APP_UPDATE && bannerActionUrl.isNotBlank()) {
+                                Button(
+                                    onClick = {
+                                        viewModel.markNotificationRead(priorityBanner.id)
+                                        val intent = com.example.util.AppUpdateChecker.buildBrowserDownloadIntent(bannerActionUrl)
+                                        if (intent != null) {
+                                            runCatching { context.startActivity(intent) }.onFailure {
+                                                Toast.makeText(context, "No se pudo abrir el navegador.", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.heightIn(min = 36.dp)
+                                ) {
+                                    Text("Descargar APK", color = Color.Black, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            androidx.compose.material3.OutlinedButton(
+                                onClick = {
+                                    viewModel.markNotificationRead(priorityBanner.id)
+                                    showNotificationsSheet = true
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.heightIn(min = 36.dp)
+                            ) {
+                                Text("Ver avisos", fontSize = 11.5.sp, color = accentColor, fontWeight = FontWeight.Bold)
+                            }
+                            TextButton(
+                                onClick = {
+                                    viewModel.markNotificationRead(priorityBanner.id)
+                                    viewModel.dismissPriorityBanner(priorityBanner.id)
+                                },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.heightIn(min = 36.dp)
+                            ) {
+                                Text("Entendido", fontSize = 11.5.sp, color = TextSecondary)
+                            }
                         }
                     }
                 }
@@ -878,6 +947,8 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                             viewModel = viewModel,
                             pendingConfigAction = pendingPsaConfigAction,
                             onConsumeConfigAction = { pendingPsaConfigAction = null },
+                            externalTargetTab = pendingPsaTargetTab,
+                            onConsumeTargetTab = { pendingPsaTargetTab = null },
                             showDashboardNav = showDashboard,
                             showSuperuserNav = showSuperuser,
                             showScriptsNav = showScripts,
@@ -888,6 +959,7 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                                 currentTab = targetTab
                             },
                             onOpenHelpGuide = { showSettingsAndHelpDialog = true },
+                            onOpenWelcomeTutorial = { showWelcomeTutorialManual = true },
                             onClose = { }
                         )
                         AppTab.SUPERUSER -> SuperuserScreen(
@@ -935,62 +1007,22 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
         }
     }
 
-    if (showKillSwitchConfirmDialog) {
-        AlertDialog(
-            onDismissRequest = { showKillSwitchConfirmDialog = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Shield,
-                    contentDescription = null,
-                    tint = RoseError,
-                    modifier = Modifier.size(36.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "🛡️ Activar Kill Switch (Bancos)",
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary,
-                    fontSize = 16.sp
-                )
-            },
-            text = {
-                Text(
-                    text = "¿Deseas desactivar inmediatamente todos los servicios de accesibilidad, superposiciones y todas las notificaciones de Como On?\n\nAl activarlo, la aplicación se desactiva por completo en segundo plano para que puedas ingresar a Banco Nación (BNA+) y demás apps bancarias de forma 100% segura y sin advertencias de control remoto.",
-                    color = TextSecondary,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showKillSwitchConfirmDialog = false
-                        val disabled = viewModel.executeKillSwitch(context)
-                        if (disabled) {
-                            Toast.makeText(
-                                context,
-                                "🛡️ Kill Switch: Accesibilidad y notificaciones apagadas. Seguro para Banco Nación.",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = RoseError),
-                    modifier = Modifier.testTag("confirm_kill_switch_button")
-                ) {
-                    Text("APAGAR TODO", fontWeight = FontWeight.Bold)
+    if (showNotificationsSheet) {
+        TeamNotificationsBottomSheet(
+            notifications = teamNotifications,
+            readIds = readNotificationIds,
+            fallbackDownloadUrl = resolvedApkDownloadUrl,
+            onMarkRead = { notifId -> viewModel.markNotificationRead(notifId) },
+            onMarkAllRead = { viewModel.markAllNotificationsRead() },
+            onOpenDownloadUrl = { rawUrl ->
+                val intent = com.example.util.AppUpdateChecker.buildBrowserDownloadIntent(rawUrl)
+                if (intent != null) {
+                    runCatching { context.startActivity(intent) }.onFailure {
+                        Toast.makeText(context, "No se pudo abrir el navegador.", Toast.LENGTH_SHORT).show()
+                    }
                 }
             },
-            dismissButton = {
-                Button(
-                    onClick = { showKillSwitchConfirmDialog = false },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = TextMuted)
-                ) {
-                    Text("Cancelar")
-                }
-            },
-            containerColor = SlateCard,
-            tonalElevation = 6.dp
+            onDismiss = { showNotificationsSheet = false }
         )
     }
 
@@ -1011,8 +1043,17 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                 viewModel.setSetupGuideDismissed(false)
                 currentTab = AppTab.DASHBOARD
             },
-            onOpenAccessibilitySettings = {
-                viewModel.openAccessibilitySettings(context)
+            onOpenNotificationSettings = {
+                val notifIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                val fallbackIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                runCatching { context.startActivity(notifIntent) }
+                    .onFailure { runCatching { context.startActivity(fallbackIntent) } }
             },
             onCheckAppDistributionUpdates = {
                 viewModel.triggerFirebaseAppDistributionCheck()
@@ -1024,6 +1065,9 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
             onOpenPsaDipPortal = {
                 currentTab = AppTab.PSA_WORKSPACE
                 pendingPsaConfigAction = com.example.ui.screens.psa.PsaConfigAction.DIP_PORTAL
+            },
+            onOpenWelcomeTutorial = {
+                showWelcomeTutorialManual = true
             },
             onDismiss = { showSettingsAndHelpDialog = false }
         )
@@ -1083,8 +1127,10 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
         )
     }
 
+    val requiresPasswordChange = user.mustChangePassword && !isSuperuser && user.email.isBlank()
+
     // Mandatory password change ONLY for legacy offline accounts (not Google Sign-In)
-    if (user.mustChangePassword && !isSuperuser && user.email.isBlank()) {
+    if (requiresPasswordChange) {
         val dialogContext = LocalContext.current
         FirstLoginChangePasswordDialog(
             user = user,
@@ -1096,6 +1142,31 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                         Toast.makeText(dialogContext, error ?: "Error al actualizar contraseña", Toast.LENGTH_SHORT).show()
                     }
                 }
+            }
+        )
+    }
+
+    // Interactive Welcome Tutorial shown automatically on first launch or when replayed manually
+    if (!requiresPasswordChange && (!hasSeenWelcomeTutorial || showWelcomeTutorialManual)) {
+        com.example.ui.components.PsaWelcomeTutorialDialog(
+            pricingConfig = psaPricingConfig,
+            financingConfig = psaFinancingConfig,
+            activeCountry = activePsaCountry,
+            onStartDemo = {
+                viewModel.setWelcomeTutorialSeen(true)
+                showWelcomeTutorialManual = false
+                currentTab = AppTab.PSA_WORKSPACE
+                pendingPsaTargetTab = com.example.ui.screens.psa.PsaWorkspaceTab.LIVE_DEMO
+            },
+            onStartBudget = {
+                viewModel.setWelcomeTutorialSeen(true)
+                showWelcomeTutorialManual = false
+                currentTab = AppTab.PSA_WORKSPACE
+                pendingPsaTargetTab = com.example.ui.screens.psa.PsaWorkspaceTab.BUDGET
+            },
+            onDismiss = {
+                viewModel.setWelcomeTutorialSeen(true)
+                showWelcomeTutorialManual = false
             }
         )
     }
@@ -1355,5 +1426,206 @@ fun BlockedAccountScreen(
             lockReason = reason,
             onDismiss = { showContactDialog = false }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun TeamNotificationsBottomSheet(
+    notifications: List<TeamNotification>,
+    readIds: Set<String>,
+    fallbackDownloadUrl: String,
+    onMarkRead: (String) -> Unit,
+    onMarkAllRead: () -> Unit,
+    onOpenDownloadUrl: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedFilter by remember { mutableStateOf("ALL") }
+    val filteredNotifications = remember(notifications, selectedFilter) {
+        when (selectedFilter) {
+            "UPDATES" -> notifications.filter { it.parsedType == TeamNotificationType.APP_UPDATE }
+            "ADMIN" -> notifications.filter {
+                it.parsedType == TeamNotificationType.SUPERUSER_GLOBAL ||
+                    it.parsedType == TeamNotificationType.SUPERUSER_DIRECT
+            }
+            "TEAM" -> notifications.filter { it.parsedType == TeamNotificationType.LEADER_COACHING }
+            else -> notifications
+        }
+    }
+    val dateFormatter = remember { SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = SlateCard
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "🔔 Centro de Avisos",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+                if (notifications.any { it.id !in readIds }) {
+                    TextButton(onClick = onMarkAllRead) {
+                        Text("Marcar todo leído", color = com.example.ui.theme.PsaCyanGlow, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(
+                    "ALL" to "Todas (${notifications.size})",
+                    "UPDATES" to "Actualizaciones",
+                    "ADMIN" to "Avisos Admin",
+                    "TEAM" to "Equipo"
+                ).forEach { (key, label) ->
+                    FilterChip(
+                        selected = selectedFilter == key,
+                        onClick = { selectedFilter = key },
+                        label = { Text(label, fontSize = 11.5.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = IndigoPrimary,
+                            selectedLabelColor = Color.White,
+                            containerColor = SlateBackground,
+                            labelColor = TextSecondary
+                        )
+                    )
+                }
+            }
+
+            if (filteredNotifications.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 28.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No hay avisos en esta categoría.",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(filteredNotifications, key = { it.id }) { notif ->
+                        val isUnread = notif.id !in readIds
+                        val accent = when {
+                            notif.parsedPriority == TeamNotificationPriority.URGENT -> RoseError
+                            notif.parsedType == TeamNotificationType.APP_UPDATE -> com.example.ui.theme.PsaCyanGlow
+                            notif.parsedType == TeamNotificationType.LEADER_COACHING -> EmeraldSuccess
+                            notif.parsedPriority == TeamNotificationPriority.IMPORTANT -> AmberDelay
+                            else -> IndigoPrimary
+                        }
+                        val timeText = if (notif.createdAtMs > 0L) dateFormatter.format(Date(notif.createdAtMs)) else "Reciente"
+                        val downloadLink = notif.actionUrl.ifBlank { fallbackDownloadUrl }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isUnread) accent.copy(alpha = 0.12f) else SlateBackground)
+                                .border(
+                                    1.dp,
+                                    if (isUnread) accent.copy(alpha = 0.55f) else SlateCardBorder,
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable { onMarkRead(notif.id) }
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (isUnread) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(accent)
+                                        )
+                                    }
+                                    Text(
+                                        text = notif.parsedType.label,
+                                        color = accent,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Text(
+                                    text = timeText,
+                                    color = TextMuted,
+                                    fontSize = 10.5.sp
+                                )
+                            }
+                            if (notif.title.isNotBlank()) {
+                                Text(
+                                    text = notif.title,
+                                    color = TextPrimary,
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (notif.body.isNotBlank()) {
+                                Text(
+                                    text = notif.body,
+                                    color = TextSecondary,
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (notif.senderName.isNotBlank()) "De: ${notif.senderName}" else notif.senderEmail,
+                                    color = TextMuted,
+                                    fontSize = 10.5.sp
+                                )
+                                if (notif.parsedType == TeamNotificationType.APP_UPDATE && downloadLink.isNotBlank()) {
+                                    TextButton(
+                                        onClick = {
+                                            onMarkRead(notif.id)
+                                            onOpenDownloadUrl(downloadLink)
+                                        },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Descargar APK", color = EmeraldSuccess, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

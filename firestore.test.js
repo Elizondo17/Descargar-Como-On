@@ -1027,3 +1027,256 @@ test("Superuser can block an operator and expire license at 0 days", async () =>
     })
   );
 });
+
+test("Superuser can apply partial updateRequired lock even on legacy user docs without full field rewrite", async () => {
+  const legacyEmail = "legacy_update_lock@gmail.com";
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("authorized_users").doc(legacyEmail).set({
+      id: "legacy_u1",
+      email: legacyEmail,
+      username: "Legacy Seller",
+      role: "OPERATOR",
+      daysGranted: 30,
+      validFrom: pastDate(10_000),
+      expiresAt: futureDate(20),
+      isBlocked: false,
+      canAccessLegacyModules: false,
+      notes: "",
+      maxDevices: 1,
+      boundDeviceIds: [],
+      boundDeviceLabels: [],
+      ownerUid: "uid-legacy-u1",
+      createdAt: new Date(Date.now() + 60_000), // skewed createdAt must not break emergency lock
+      updatedAt: pastDate(500),
+    });
+  });
+
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", { email: ADMIN_EMAIL, email_verified: true })
+    .firestore();
+  const sellerDb = testEnv
+    .authenticatedContext("uid-legacy-u1", { email: legacyEmail, email_verified: true })
+    .firestore();
+
+  // Superuser can lock for mandatory update and then unlock partially
+  await assertSucceeds(
+    adminDb.collection("authorized_users").doc(legacyEmail).update({
+      updateRequired: true,
+      requiredVersionCode: 4,
+      updateLockReason: "Actualiza a la compilación 4",
+      updatedAt: pastDate(100),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("authorized_users").doc(legacyEmail).update({
+      updateRequired: false,
+      requiredVersionCode: 4,
+      updateLockReason: "",
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Seller cannot lock another user or escalate updateRequired=true themselves
+  await assertFails(
+    sellerDb.collection("authorized_users").doc(OP_EMAIL).update({
+      updateRequired: true,
+      requiredVersionCode: 99,
+      updateLockReason: "Spoof",
+      updatedAt: pastDate(50),
+    })
+  );
+});
+
+test("SellerPerformanceStats supports 30-day recentActivityJson up to 10000 chars and team_notifications enforces global, direct, and coaching ACLs", async () => {
+  const leaderEmail = "teamleader@gmail.com";
+  const subEmail = "teamseller@gmail.com";
+  const outsiderEmail = "outsider@gmail.com";
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("authorized_users").doc(leaderEmail).set(
+      buildUserDoc({
+        id: "ldr_1",
+        email: leaderEmail,
+        username: "Lider",
+        ownerUid: "uid-ldr-1",
+        boundDeviceIds: ["dev-ldr"],
+        boundDeviceLabels: ["Pixel"],
+        canManageSubUsers: true,
+      })
+    );
+    await db.collection("authorized_users").doc(subEmail).set(
+      buildUserDoc({
+        id: "sub_2",
+        email: subEmail,
+        username: "Sub",
+        ownerUid: "uid-sub-2",
+        boundDeviceIds: ["dev-sub2"],
+        boundDeviceLabels: ["Moto"],
+        parentEmail: leaderEmail,
+        supervisorChainEmails: [leaderEmail],
+        hierarchyDepth: 1,
+      })
+    );
+    await db.collection("authorized_users").doc(outsiderEmail).set(
+      buildUserDoc({
+        id: "out_1",
+        email: outsiderEmail,
+        username: "Outsider",
+        ownerUid: "uid-out-1",
+        boundDeviceIds: ["dev-out"],
+        boundDeviceLabels: ["Samsung"],
+        supervisorChainEmails: [],
+      })
+    );
+  });
+
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", { email: ADMIN_EMAIL, email_verified: true })
+    .firestore();
+  const leaderDb = testEnv
+    .authenticatedContext("uid-ldr-1", { email: leaderEmail, email_verified: true })
+    .firestore();
+  const subDb = testEnv
+    .authenticatedContext("uid-sub-2", { email: subEmail, email_verified: true })
+    .firestore();
+  const outsiderDb = testEnv
+    .authenticatedContext("uid-out-1", { email: outsiderEmail, email_verified: true })
+    .firestore();
+
+  // 30-day JSON (>2500 chars) succeeds for seller_stats up to 10000 chars
+  const bigActivity = JSON.stringify(
+    Array.from({ length: 30 }, (_, idx) => ({
+      d: `2026-11-${String((idx % 28) + 1).padStart(2, "0")}`,
+      l: `${(idx % 28) + 1}/11`,
+      ok: 25,
+      fail: 2,
+      call: 14,
+      cita: 3,
+      demo: 2,
+      note: "diagnostico_calidad_agua_completo_psa",
+    }))
+  );
+  if (bigActivity.length <= 2500 || bigActivity.length > 10000) {
+    throw new Error(`Unexpected bigActivity length: ${bigActivity.length}`);
+  }
+  await assertSucceeds(
+    subDb.collection("seller_stats").doc("uid-sub-2").set({
+      ownerUid: "uid-sub-2",
+      sellerName: "Sub",
+      sellerEmail: subEmail,
+      totalContacts: 30,
+      totalVisits: 12,
+      completedDemos: 10,
+      closedSales: 5,
+      pendingReplacements: 1,
+      recentActivityJson: bigActivity,
+      parentEmail: leaderEmail,
+      supervisorChainEmails: [leaderEmail],
+      hierarchyDepth: 1,
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Superuser creates global & direct notices
+  await assertSucceeds(
+    adminDb.collection("team_notifications").doc("notif_global_1").set({
+      id: "notif_global_1",
+      type: "SUPERUSER_GLOBAL",
+      priority: "IMPORTANT",
+      targetMode: "ALL",
+      targetEmail: "",
+      senderEmail: ADMIN_EMAIL,
+      senderName: "Administrador",
+      senderUid: "uid-admin",
+      title: "Aviso General",
+      body: "Reunión hoy a las 19hs.",
+      actionUrl: "",
+      requiredVersionCode: 0,
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+    })
+  );
+
+  await assertSucceeds(
+    adminDb.collection("team_notifications").doc("notif_direct_1").set({
+      id: "notif_direct_1",
+      type: "SUPERUSER_DIRECT",
+      priority: "URGENT",
+      targetMode: "USER",
+      targetEmail: subEmail,
+      senderEmail: ADMIN_EMAIL,
+      senderName: "Administrador",
+      senderUid: "uid-admin",
+      title: "Meta de Hoy",
+      body: "Excelente ritmo de llamadas!",
+      actionUrl: "",
+      requiredVersionCode: 0,
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+    })
+  );
+
+  // Authorized leader can send LEADER_COACHING to their subordinate, but NOT to an outsider
+  await assertSucceeds(
+    leaderDb.collection("team_notifications").doc("notif_coach_ok").set({
+      id: "notif_coach_ok",
+      type: "LEADER_COACHING",
+      priority: "INFO",
+      targetMode: "USER",
+      targetEmail: subEmail,
+      senderEmail: leaderEmail,
+      senderName: "Lider",
+      senderUid: "uid-ldr-1",
+      title: "Buen trabajo",
+      body: "Metamos 5 llamadas mas antes de las 19hs.",
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+    })
+  );
+
+  await assertFails(
+    leaderDb.collection("team_notifications").doc("notif_coach_bad").set({
+      id: "notif_coach_bad",
+      type: "LEADER_COACHING",
+      priority: "INFO",
+      targetMode: "USER",
+      targetEmail: outsiderEmail,
+      senderEmail: leaderEmail,
+      senderName: "Lider",
+      senderUid: "uid-ldr-1",
+      title: "No autorizado",
+      body: "Intento fuera de rama.",
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+    })
+  );
+
+  // Regular seller cannot forge SUPERUSER_GLOBAL or send coaching messages
+  await assertFails(
+    subDb.collection("team_notifications").doc("notif_spoof").set({
+      id: "notif_spoof",
+      type: "SUPERUSER_GLOBAL",
+      priority: "URGENT",
+      targetMode: "ALL",
+      targetEmail: "",
+      senderEmail: subEmail,
+      senderName: "Sub",
+      senderUid: "uid-sub-2",
+      title: "Fake",
+      body: "Fake",
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+    })
+  );
+
+  // Visibility: sub reads global + own direct; outsider reads global ONLY and CANNOT read sub's direct or coaching
+  await assertSucceeds(outsiderDb.collection("team_notifications").doc("notif_global_1").get());
+  await assertFails(outsiderDb.collection("team_notifications").doc("notif_direct_1").get());
+  await assertFails(outsiderDb.collection("team_notifications").doc("notif_coach_ok").get());
+  await assertSucceeds(subDb.collection("team_notifications").doc("notif_direct_1").get());
+  await assertSucceeds(subDb.collection("team_notifications").doc("notif_coach_ok").get());
+  await assertSucceeds(subDb.collection("team_notifications").where("targetMode", "==", "ALL").get());
+  await assertSucceeds(subDb.collection("team_notifications").where("targetEmail", "==", subEmail).get());
+  await assertSucceeds(leaderDb.collection("team_notifications").where("senderEmail", "==", leaderEmail).get());
+});

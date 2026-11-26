@@ -160,33 +160,46 @@ service cloud.firestore {
                        );
 
       allow update: if isValidEmailKey(emailKey) &&
-                       isValidAuthorizedUser(request.resource.data, emailKey) &&
-                       request.resource.data.email == resource.data.email &&
-                       request.resource.data.id == resource.data.id &&
-                       request.resource.data.createdAt == resource.data.createdAt &&
                        (
-                         isSuperuser() ||
-                         (isSignedIn() &&
-                          emailKey == authEmail() &&
-                          resource.data.isBlocked == false &&
-                          (!('approvalStatus' in resource.data) || resource.data.approvalStatus == 'ACTIVE') &&
-                          resource.data.expiresAt > request.time &&
+                         (isSuperuser() &&
                           request.resource.data.diff(resource.data).affectedKeys()
-                            .hasOnly([
-                              'boundDeviceIds', 'boundDeviceLabels', 'ownerUid',
-                              'updatedAt', 'lastTamperAlertAtMs',
-                              'updateRequired', 'updateLockReason'
-                            ]) &&
-                          (!('updateRequired' in request.resource.data.diff(resource.data).affectedKeys()) ||
-                            request.resource.data.updateRequired == false) &&
-                          (!('updateLockReason' in request.resource.data.diff(resource.data).affectedKeys()) ||
-                            request.resource.data.updateLockReason == '') &&
-                          request.resource.data.boundDeviceIds.size() <= resource.data.maxDevices &&
-                          request.resource.data.boundDeviceIds.hasAll(resource.data.boundDeviceIds) &&
-                          (
-                            (resource.data.ownerUid == '' && request.resource.data.ownerUid == request.auth.uid) ||
-                            (resource.data.ownerUid == request.auth.uid && request.resource.data.ownerUid == resource.data.ownerUid)
-                          ))
+                            .hasOnly(['updateRequired', 'requiredVersionCode', 'updateLockReason', 'isBlocked', 'updatedAt']) &&
+                          (!('updateRequired' in request.resource.data) || request.resource.data.updateRequired is bool) &&
+                          (!('requiredVersionCode' in request.resource.data) || (request.resource.data.requiredVersionCode is int && request.resource.data.requiredVersionCode >= 0 && request.resource.data.requiredVersionCode <= 100000)) &&
+                          (!('updateLockReason' in request.resource.data) || (request.resource.data.updateLockReason is string && request.resource.data.updateLockReason.size() <= 300)) &&
+                          (!('isBlocked' in request.resource.data) || request.resource.data.isBlocked is bool) &&
+                          request.resource.data.updatedAt is timestamp &&
+                          request.resource.data.updatedAt <= request.time) ||
+                         (
+                           isValidAuthorizedUser(request.resource.data, emailKey) &&
+                           request.resource.data.email == resource.data.email &&
+                           request.resource.data.id == resource.data.id &&
+                           request.resource.data.createdAt == resource.data.createdAt &&
+                           (
+                             isSuperuser() ||
+                             (isSignedIn() &&
+                              emailKey == authEmail() &&
+                              resource.data.isBlocked == false &&
+                              (!('approvalStatus' in resource.data) || resource.data.approvalStatus == 'ACTIVE') &&
+                              resource.data.expiresAt > request.time &&
+                              request.resource.data.diff(resource.data).affectedKeys()
+                                .hasOnly([
+                                  'boundDeviceIds', 'boundDeviceLabels', 'ownerUid',
+                                  'updatedAt', 'lastTamperAlertAtMs',
+                                  'updateRequired', 'updateLockReason'
+                                ]) &&
+                              (!('updateRequired' in request.resource.data.diff(resource.data).affectedKeys()) ||
+                                request.resource.data.updateRequired == false) &&
+                              (!('updateLockReason' in request.resource.data.diff(resource.data).affectedKeys()) ||
+                                request.resource.data.updateLockReason == '') &&
+                              request.resource.data.boundDeviceIds.size() <= resource.data.maxDevices &&
+                              request.resource.data.boundDeviceIds.hasAll(resource.data.boundDeviceIds) &&
+                              (
+                                (resource.data.ownerUid == '' && request.resource.data.ownerUid == request.auth.uid) ||
+                                (resource.data.ownerUid == request.auth.uid && request.resource.data.ownerUid == resource.data.ownerUid)
+                              ))
+                           )
+                         )
                        );
 
       allow delete: if isValidEmailKey(emailKey) && isSuperuser() && emailKey != 'leonelizondo16@gmail.com';
@@ -333,7 +346,7 @@ service cloud.firestore {
              (!('lastMessageAtMs' in data) || (data.lastMessageAtMs is int && data.lastMessageAtMs >= 0)) &&
              (!('lastActivityAtMs' in data) || (data.lastActivityAtMs is int && data.lastActivityAtMs >= 0)) &&
              (!('lastActivityLabel' in data) || (data.lastActivityLabel is string && data.lastActivityLabel.size() <= 160)) &&
-             (!('recentActivityJson' in data) || (data.recentActivityJson is string && data.recentActivityJson.size() <= 2500)) &&
+             (!('recentActivityJson' in data) || (data.recentActivityJson is string && data.recentActivityJson.size() <= 10000)) &&
              (!('parentEmail' in data) || (data.parentEmail is string && data.parentEmail.size() <= 120)) &&
              (!('supervisorChainEmails' in data) || (data.supervisorChainEmails is list && data.supervisorChainEmails.size() <= 10)) &&
              (!('hierarchyDepth' in data) || (data.hierarchyDepth is int && data.hierarchyDepth >= 0 && data.hierarchyDepth <= 15)) &&
@@ -654,6 +667,80 @@ service cloud.firestore {
                           resource.data.requestedByEmail == authEmail() &&
                           resource.data.status == 'PENDING')
                        );
+    }
+
+    function isValidNotificationId(notifId) {
+      return notifId is string &&
+             notifId.size() >= 3 &&
+             notifId.size() <= 80 &&
+             notifId.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidTeamNotification(data, notifId) {
+      return data.keys().hasAll([
+               'id', 'type', 'priority', 'targetMode', 'targetEmail',
+               'senderEmail', 'senderName', 'senderUid', 'title', 'body',
+               'createdAtMs', 'createdAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'type', 'priority', 'targetMode', 'targetEmail',
+               'senderEmail', 'senderName', 'senderUid', 'title', 'body',
+               'actionUrl', 'requiredVersionCode', 'createdAtMs', 'createdAt'
+             ]) &&
+             data.id is string && data.id == notifId &&
+             data.type in ['APP_UPDATE', 'SUPERUSER_GLOBAL', 'SUPERUSER_DIRECT', 'LEADER_COACHING'] &&
+             data.priority in ['INFO', 'IMPORTANT', 'URGENT'] &&
+             data.targetMode in ['ALL', 'USER'] &&
+             data.targetEmail is string && data.targetEmail.size() <= 120 &&
+             ((data.targetMode == 'ALL' && data.targetEmail == '') ||
+              (data.targetMode == 'USER' && isValidEmailKey(data.targetEmail))) &&
+             data.senderEmail is string && isValidEmailKey(data.senderEmail) &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+             data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.body is string && data.body.size() >= 1 && data.body.size() <= 1000 &&
+             (!('actionUrl' in data) || (data.actionUrl is string && data.actionUrl.size() <= 500)) &&
+             (!('requiredVersionCode' in data) || (data.requiredVersionCode is int && data.requiredVersionCode >= 0 && data.requiredVersionCode <= 100000)) &&
+             data.createdAtMs is int && data.createdAtMs >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    match /team_notifications/{notifId} {
+      allow get: if isValidNotificationId(notifId) &&
+                    (
+                      isSuperuser() ||
+                      (isSignedIn() && (
+                        resource.data.targetMode == 'ALL' ||
+                        resource.data.targetEmail == authEmail() ||
+                        resource.data.senderEmail == authEmail()
+                      ))
+                    );
+
+      // Zero get()/exists() inside allow list: bootstrap admin or scoped to global/recipient/sender
+      allow list: if isBootstrapAdmin() ||
+                     (isSignedIn() && (
+                       resource.data.targetMode == 'ALL' ||
+                       resource.data.targetEmail == authEmail() ||
+                       resource.data.senderEmail == authEmail()
+                     ));
+
+      allow create: if isValidNotificationId(notifId) &&
+                       isValidTeamNotification(request.resource.data, notifId) &&
+                       request.resource.data.senderEmail == authEmail() &&
+                       request.resource.data.senderUid == request.auth.uid &&
+                       (
+                         isSuperuser() ||
+                         (
+                           request.resource.data.type == 'LEADER_COACHING' &&
+                           request.resource.data.targetMode == 'USER' &&
+                           isAuthorizedSubManager() &&
+                           exists(/databases/$(database)/documents/authorized_users/$(request.resource.data.targetEmail)) &&
+                           ('supervisorChainEmails' in get(/databases/$(database)/documents/authorized_users/$(request.resource.data.targetEmail)).data) &&
+                           (authEmail() in get(/databases/$(database)/documents/authorized_users/$(request.resource.data.targetEmail)).data.supervisorChainEmails)
+                         )
+                       );
+
+      allow update, delete: if isValidNotificationId(notifId) && isSuperuser();
     }
   }
 }

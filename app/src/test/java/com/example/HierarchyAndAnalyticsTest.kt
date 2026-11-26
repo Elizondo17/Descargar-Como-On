@@ -3,14 +3,23 @@ package com.example
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.model.ApprovalStatus
 import com.example.data.model.HierarchyTreeBuilder
+import com.example.data.model.PsaContactInteraction
 import com.example.data.model.SellerPerformanceStats
+import com.example.data.model.TeamNotification
+import com.example.data.model.TeamNotificationPriority
+import com.example.data.model.TeamNotificationTargetMode
+import com.example.data.model.TeamNotificationType
 import com.example.data.model.UserAccount
 import com.example.util.AccessLockReason
+import com.example.util.AppUpdateChecker
+import com.example.util.CallingWindowSlot
 import com.example.util.LicenseSecurityGuard
+import com.example.util.PsaCallCoachingEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Calendar
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -177,4 +186,103 @@ class HierarchyAndAnalyticsTest {
         assertEquals(7, stats.parsedRecentBuckets.size)
         assertEquals(2, stats.parsedRecentBuckets.last().messagesSuccess)
     }
+
+    @Test
+    fun `30 day activity buckets preserve appointmentsCount, demosCount and date lookup`() {
+        val now = System.currentTimeMillis()
+        val yesterday = now - 86_400_000L
+        val buckets = HierarchyTreeBuilder.buildLast30DaysBuckets(
+            deliveryTimestampsAndSuccess = listOf(now to true, yesterday to true),
+            callTimestamps = listOf(now, now, yesterday),
+            appointmentTimestamps = listOf(now, yesterday, yesterday),
+            demoTimestamps = listOf(now),
+            nowMs = now
+        )
+        assertEquals(30, buckets.size)
+        val todayBucket = buckets.last()
+        assertEquals(1, todayBucket.messagesSuccess)
+        assertEquals(2, todayBucket.callsCount)
+        assertEquals(1, todayBucket.appointmentsCount)
+        assertEquals(1, todayBucket.demosCount)
+
+        val yesterdayBucket = buckets[buckets.size - 2]
+        assertEquals(2, yesterdayBucket.appointmentsCount)
+
+        val stats = SellerPerformanceStats(
+            sellerEmail = "vendedor@psa.com",
+            recentActivityJson = HierarchyTreeBuilder.serializeActivityBuckets(buckets)
+        )
+        val found = HierarchyTreeBuilder.findBucketForDate(stats, yesterdayBucket.dayKey)
+        assertEquals(2, found.appointmentsCount)
+        assertEquals(1, found.callsCount)
+    }
+
+    @Test
+    fun `call coaching engine adapts messaging across tiers and detects best calling slot`() {
+        val zeroTier = PsaCallCoachingEngine.buildAdaptiveCoaching(callsToday = 0, successToday = 0)
+        assertEquals("Arranque del Día", zeroTier.badgeTitle)
+
+        val warmTier = PsaCallCoachingEngine.buildAdaptiveCoaching(callsToday = 3, successToday = 1)
+        assertEquals("Entrando en Calor", warmTier.badgeTitle)
+
+        val steadyTier = PsaCallCoachingEngine.buildAdaptiveCoaching(callsToday = 8, successToday = 3, appointmentsToday = 1)
+        assertEquals("Ritmo Constante", steadyTier.badgeTitle)
+
+        val topTier = PsaCallCoachingEngine.buildAdaptiveCoaching(callsToday = 14, successToday = 6)
+        assertEquals("Líder en Acción", topTier.badgeTitle)
+
+        fun tsAtHour(hour: Int): Long = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, 15)
+            set(Calendar.SECOND, 0)
+        }.timeInMillis
+
+        val interactions = listOf(
+            PsaContactInteraction(leadId = "l1", leadName = "Cliente 1", channel = "CALL", result = "NO_ANSWER", dateKey = "2026-11-25", timestampMs = tsAtHour(10)),
+            PsaContactInteraction(leadId = "l2", leadName = "Cliente 2", channel = "CALL", result = "NO_ANSWER", dateKey = "2026-11-25", timestampMs = tsAtHour(10)),
+            PsaContactInteraction(leadId = "l3", leadName = "Cliente 3", channel = "CALL", result = "SUCCESS", dateKey = "2026-11-25", timestampMs = tsAtHour(19)),
+            PsaContactInteraction(leadId = "l4", leadName = "Cliente 4", channel = "CALL", result = "SUCCESS", dateKey = "2026-11-25", timestampMs = tsAtHour(19))
+        )
+        val analysis = PsaCallCoachingEngine.analyzeCallTiming(interactions)
+        assertTrue(analysis.hasPersonalHistory)
+        assertEquals(CallingWindowSlot.EVENING, analysis.bestWindow?.slot)
+        assertEquals(19, analysis.bestHour?.hour)
+        assertEquals(100, analysis.bestHour?.conversionPercent)
+
+        val triggerMs = PsaCallCoachingEngine.computeNextPrePeakTriggerMs(
+            targetHour = 19,
+            targetMinute = 0,
+            leadMinutes = 10,
+            nowMs = tsAtHour(20)
+        )
+        assertTrue(triggerMs > tsAtHour(20))
+    }
+
+    @Test
+    fun `team notification parsing and mandatory update lock evaluation work consistently`() {
+        val notif = TeamNotification(
+            id = "n1",
+            type = TeamNotificationType.APP_UPDATE.name,
+            priority = TeamNotificationPriority.URGENT.name,
+            targetMode = TeamNotificationTargetMode.ALL.name,
+            title = "Nueva v1.3",
+            requiredVersionCode = 4
+        )
+        assertEquals(TeamNotificationType.APP_UPDATE, notif.parsedType)
+        assertEquals(TeamNotificationPriority.URGENT, notif.parsedPriority)
+        assertEquals(TeamNotificationTargetMode.ALL, notif.parsedTargetMode)
+
+        val lockedUser = makeUser("seller@psa.com", "Seller").copy(
+            updateRequired = true,
+            requiredVersionCode = BuildConfig.VERSION_CODE + 1
+        )
+        val eval = AppUpdateChecker.evaluateUpdateLockState(
+            installedVersionCode = BuildConfig.VERSION_CODE,
+            user = lockedUser,
+            serverInfo = null
+        )
+        assertTrue(eval.isLocked)
+        assertEquals(BuildConfig.VERSION_CODE + 1, eval.requiredVersionCode)
+    }
 }
+

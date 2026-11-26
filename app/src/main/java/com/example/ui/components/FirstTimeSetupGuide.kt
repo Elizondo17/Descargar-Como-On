@@ -13,12 +13,15 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,15 +33,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HourglassEmpty
-import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -47,7 +48,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -68,28 +68,27 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.example.service.EzoAccessibilityService
 import com.example.ui.theme.AmberDelay
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IndigoPrimary
+import com.example.ui.theme.LocalIsLargeFontMode
 import com.example.ui.theme.SlateBackground
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.SlateCardBorder
-import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.MainViewModel
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FirstTimeSetupGuide(
-    viewModel: MainViewModel,
+    @Suppress("UNUSED_PARAMETER") viewModel: MainViewModel,
     onDismissGuide: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val isLargeFont = com.example.ui.theme.LocalIsLargeFontMode.current
+    val isLargeFont = LocalIsLargeFontMode.current
 
     var resumeCounter by remember { mutableIntStateOf(0) }
 
@@ -105,22 +104,8 @@ fun FirstTimeSetupGuide(
         }
     }
 
-    val isAccessibilityConnected by viewModel.isAccessibilityConnected.collectAsState()
-
-    val isAccessibilityActive = remember(isAccessibilityConnected, resumeCounter) {
-        isAccessibilityConnected || EzoAccessibilityService.isAccessibilityEnabledInSettings(context)
-    }
-
     val areNotificationsEnabled = remember(resumeCounter) {
         NotificationManagerCompat.from(context).areNotificationsEnabled()
-    }
-
-    val canDrawOverlays = remember(resumeCounter) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(context)
-        } else {
-            true
-        }
     }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -129,8 +114,8 @@ fun FirstTimeSetupGuide(
         resumeCounter++
     }
 
-    val totalRequiredSteps = 2
-    val completedSteps = (if (isAccessibilityActive) 1 else 0) + (if (areNotificationsEnabled) 1 else 0)
+    val totalRequiredSteps = 1
+    val completedSteps = if (areNotificationsEnabled) 1 else 0
     val allCompleted = completedSteps == totalRequiredSteps
     val progressFraction = completedSteps.toFloat() / totalRequiredSteps.toFloat()
 
@@ -184,7 +169,7 @@ fun FirstTimeSetupGuide(
                 Spacer(modifier = Modifier.width(10.dp))
 
                 Column {
-                    androidx.compose.foundation.layout.FlowRow(
+                    FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
@@ -213,7 +198,7 @@ fun FirstTimeSetupGuide(
                     }
 
                     Text(
-                        text = if (allCompleted) "Permisos listos" else "Activa permisos básicos para comenzar",
+                        text = if (allCompleted) "Notificaciones activas" else "Activa las notificaciones para avisos y recordatorios",
                         color = TextSecondary,
                         fontSize = 11.sp
                     )
@@ -250,22 +235,8 @@ fun FirstTimeSetupGuide(
             ) {
                 PermissionStepCard(
                     stepNumber = "1",
-                    title = "Accesibilidad",
-                    description = "Lectura y envío asistido en CRM.",
-                    icon = Icons.Default.TouchApp,
-                    isGranted = isAccessibilityActive,
-                    grantedLabel = "Activo",
-                    pendingLabel = "Pendiente",
-                    actionButtonText = if (isAccessibilityActive) "Revisar" else "Activar",
-                    onActionClick = { viewModel.openAccessibilitySettings(context) },
-                    actionButtonTag = "setup_open_accessibility_button",
-                    isLargeFont = isLargeFont
-                )
-
-                PermissionStepCard(
-                    stepNumber = "2",
                     title = "Notificaciones",
-                    description = "Alertas y control rápido de estado.",
+                    description = "Alertas de mejores horarios para llamar, recordatorios, avisos del equipo y nuevas versiones.",
                     icon = Icons.Default.Notifications,
                     isGranted = areNotificationsEnabled,
                     grantedLabel = "Activo",
@@ -282,20 +253,6 @@ fun FirstTimeSetupGuide(
                     isLargeFont = isLargeFont
                 )
 
-                PermissionStepCard(
-                    stepNumber = "3",
-                    title = "Burbuja flotante",
-                    description = "Acceso rápido sobre WhatsApp.",
-                    icon = Icons.Default.Layers,
-                    isGranted = canDrawOverlays,
-                    grantedLabel = "Activo",
-                    pendingLabel = "Opcional",
-                    actionButtonText = if (canDrawOverlays) "Listo" else "Habilitar",
-                    onActionClick = { openOverlaySettings(context) },
-                    actionButtonTag = "setup_open_overlay_settings_button",
-                    isLargeFont = isLargeFont
-                )
-
                 if (onDismissGuide != null) {
                     OutlinedButton(
                         onClick = onDismissGuide,
@@ -304,7 +261,7 @@ fun FirstTimeSetupGuide(
                             .heightIn(min = 42.dp)
                             .testTag("setup_dismiss_guide_button"),
                         shape = RoundedCornerShape(8.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, SlateCardBorder)
+                        border = BorderStroke(1.dp, SlateCardBorder)
                     ) {
                         Text(
                             text = "Ocultar guía (disponible en ⚙️ Ayuda)",
@@ -319,7 +276,7 @@ fun FirstTimeSetupGuide(
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PermissionStepCard(
     stepNumber: String,
@@ -347,7 +304,7 @@ private fun PermissionStepCard(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        androidx.compose.foundation.layout.FlowRow(
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -429,7 +386,7 @@ private fun PermissionStepCard(
                     .heightIn(min = if (isLargeFont) 46.dp else 40.dp)
                     .testTag(actionButtonTag),
                 shape = RoundedCornerShape(8.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, EmeraldSuccess.copy(alpha = 0.5f))
+                border = BorderStroke(1.dp, EmeraldSuccess.copy(alpha = 0.5f))
             ) {
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
@@ -496,24 +453,5 @@ private fun openAppNotificationSettings(context: Context) {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
         context.startActivity(fallback)
-    }
-}
-
-private fun openOverlaySettings(context: Context) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        try {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:${context.packageName}")
-            ).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            context.startActivity(intent)
-        } catch (_: Exception) {
-            val fallback = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            context.startActivity(fallback)
-        }
     }
 }

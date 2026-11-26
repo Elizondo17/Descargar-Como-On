@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckCircle
@@ -51,11 +52,14 @@ import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Label
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PhoneForwarded
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.TipsAndUpdates
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -74,6 +78,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -94,6 +100,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.CallReminderEntity
 import com.example.data.model.PsaAchievementBadge
 import com.example.data.model.PsaContactChannel
 import com.example.data.model.PsaContactLead
@@ -101,6 +108,7 @@ import com.example.data.model.PsaDailyGoalStats
 import com.example.data.model.PsaLeadStatus
 import com.example.ui.theme.AmberDelay
 import com.example.ui.theme.EmeraldSuccess
+import com.example.ui.theme.IndigoPrimary
 import com.example.ui.theme.LocalIsLargeFontMode
 import com.example.ui.theme.PurpleNeon
 import com.example.ui.theme.PsaBlueDark
@@ -116,6 +124,8 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.MainViewModel
+import com.example.util.CallCoachingInsight
+import com.example.util.CallTimingAnalysis
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -139,6 +149,10 @@ fun PsaContactsTabContent(
     val context = LocalContext.current
     val leads by viewModel.allPsaLeads.collectAsState()
     val dailyStats by viewModel.dailyContactStats.collectAsState()
+    val callCoachingInsight by viewModel.callCoachingInsight.collectAsState()
+    val callTimingAnalysis by viewModel.callTimingAnalysis.collectAsState()
+    val allCallReminders by viewModel.allCallReminders.collectAsState()
+    val prePeakReminderEnabled by viewModel.prePeakReminderEnabled.collectAsState()
 
     var activeFilter by remember { mutableStateOf(PsaLeadFilter.ALL) }
     var searchQuery by remember { mutableStateOf("") }
@@ -147,6 +161,9 @@ fun PsaContactsTabContent(
     var showAddDialog by remember { mutableStateOf(false) }
     var leadToLog by remember { mutableStateOf<PsaContactLead?>(null) }
     var showGoalDialog by remember { mutableStateOf(false) }
+    var showReminderDetailsDialog by remember { mutableStateOf(false) }
+    var pendingReminderHour by remember { mutableIntStateOf(18) }
+    var pendingReminderMinute by remember { mutableIntStateOf(0) }
 
     // Multi-select state
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -208,6 +225,54 @@ fun PsaContactsTabContent(
                 PsaDailyGoalAchievementCard(
                     stats = dailyStats,
                     onEditGoalClick = { showGoalDialog = true }
+                )
+            }
+
+            // --- 1B. ADAPTIVE CALL COACHING & ORGANIZATION ---
+            item {
+                PsaCallCoachingCard(insight = callCoachingInsight)
+            }
+
+            // --- 1C. CALL TIMING ANALYTICS & PRE-PEAK ALERT ---
+            item {
+                PsaCallTimingCard(
+                    analysis = callTimingAnalysis,
+                    prePeakEnabled = prePeakReminderEnabled,
+                    onTogglePrePeak = { enabled ->
+                        viewModel.togglePrePeakReminder(enabled)
+                        Toast.makeText(
+                            context,
+                            if (enabled) "🔔 Te avisaremos 10 min antes de tu mejor horario." else "Recordatorio automático de horario pico desactivado.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+            }
+
+            // --- 1D. CUSTOM CALL REMINDERS ---
+            item {
+                PsaCallRemindersCard(
+                    reminders = allCallReminders,
+                    onAddReminderClick = {
+                        val nowCal = Calendar.getInstance()
+                        android.app.TimePickerDialog(
+                            context,
+                            { _, hourOfDay, minute ->
+                                pendingReminderHour = hourOfDay
+                                pendingReminderMinute = minute
+                                showReminderDetailsDialog = true
+                            },
+                            callTimingAnalysis.recommendedReminderHour.coerceIn(7, 22),
+                            0,
+                            true
+                        ).show()
+                    },
+                    onToggleReminder = { reminder, enabled ->
+                        viewModel.toggleCallReminder(reminder, enabled)
+                    },
+                    onDeleteReminder = { reminder ->
+                        viewModel.deleteCallReminder(reminder)
+                    }
                 )
             }
 
@@ -645,6 +710,28 @@ fun PsaContactsTabContent(
     }
 
     // --- DIALOGS ---
+
+    if (showReminderDetailsDialog) {
+        PsaCreateCallReminderDialog(
+            hourOfDay = pendingReminderHour,
+            minute = pendingReminderMinute,
+            onDismiss = { showReminderDetailsDialog = false },
+            onSave = { title, note ->
+                viewModel.createCallReminder(
+                    hourOfDay = pendingReminderHour,
+                    minute = pendingReminderMinute,
+                    title = title,
+                    note = note
+                )
+                showReminderDetailsDialog = false
+                Toast.makeText(
+                    context,
+                    "⏰ Recordatorio guardado para las ${String.format(Locale.ROOT, "%02d:%02d", pendingReminderHour, pendingReminderMinute)}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        )
+    }
 
     if (showAddDialog) {
         PsaAddOrEditLeadDialog(
@@ -2052,4 +2139,420 @@ private fun nextDateFormatted(daysAhead: Int): String {
     cal.add(Calendar.DAY_OF_YEAR, daysAhead)
     return SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(cal.time)
 }
+
+@Composable
+private fun PsaCallCoachingCard(
+    insight: CallCoachingInsight
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("psa_call_coaching_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.45f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.TipsAndUpdates,
+                        contentDescription = null,
+                        tint = AmberDelay,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Coach de Llamadas",
+                        color = AmberDelay,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.5.sp
+                    )
+                }
+                Surface(
+                    color = PsaCyanPrimary.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.45f))
+                ) {
+                    Text(
+                        text = insight.badgeTitle,
+                        color = PsaCyanGlow,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = insight.headline,
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
+
+            Text(
+                text = insight.motivationalTip,
+                color = TextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 16.sp
+            )
+
+            Surface(
+                color = SlateBackground,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, SlateCardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        text = "📋 Organización: ${insight.organizationTip}",
+                        color = TextPrimary,
+                        fontSize = 11.5.sp,
+                        lineHeight = 15.5.sp
+                    )
+                    Text(
+                        text = "🕒 Horario sugerido: ${insight.nextActionTip}",
+                        color = PsaCyanGlow,
+                        fontSize = 11.5.sp,
+                        lineHeight = 15.5.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PsaCallTimingCard(
+    analysis: CallTimingAnalysis,
+    prePeakEnabled: Boolean,
+    onTogglePrePeak: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("psa_call_timing_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        border = BorderStroke(1.dp, IndigoPrimary.copy(alpha = 0.45f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Schedule,
+                    contentDescription = null,
+                    tint = PsaCyanGlow,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = "Análisis de Horarios Efectivos",
+                    color = PsaCyanGlow,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.5.sp
+                )
+            }
+
+            Text(
+                text = analysis.recommendationHeadline,
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            )
+            Text(
+                text = analysis.recommendationDetail,
+                color = TextSecondary,
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                analysis.windowBreakdown.forEach { win ->
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "${win.slot.label} (${win.slot.rangeLabel})",
+                                color = TextPrimary,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = if (win.totalCalls > 0) "${win.conversionPercent}% (${win.connectedCalls}/${win.totalCalls})" else "Sin datos",
+                                color = if (win == analysis.bestWindow && win.totalCalls > 0) EmeraldSuccess else TextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        LinearProgressIndicator(
+                            progress = { (win.conversionPercent / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = if (win == analysis.bestWindow && win.totalCalls > 0) EmeraldSuccess else PsaCyanPrimary,
+                            trackColor = SlateBackground
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SlateBackground)
+                    .border(1.dp, SlateCardBorder, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "🔔 Avisarme 10 min antes",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp
+                    )
+                    Text(
+                        text = "Notificación previa a tus ${String.format(Locale.ROOT, "%02d:%02d", analysis.recommendedReminderHour, analysis.recommendedReminderMinute)}",
+                        color = TextSecondary,
+                        fontSize = 10.5.sp
+                    )
+                }
+                Switch(
+                    checked = prePeakEnabled,
+                    onCheckedChange = onTogglePrePeak,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.Black,
+                        checkedTrackColor = EmeraldSuccess
+                    ),
+                    modifier = Modifier.testTag("switch_pre_peak_call_reminder")
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PsaCallRemindersCard(
+    reminders: List<CallReminderEntity>,
+    onAddReminderClick: () -> Unit,
+    onToggleReminder: (CallReminderEntity, Boolean) -> Unit,
+    onDeleteReminder: (CallReminderEntity) -> Unit
+) {
+    val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("psa_call_reminders_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        border = BorderStroke(1.dp, SlateCardBorder)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Alarm,
+                        contentDescription = null,
+                        tint = EmeraldSuccess,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Mis Horarios de Llamada",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.5.sp
+                    )
+                }
+                OutlinedButton(
+                    onClick = onAddReminderClick,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    border = BorderStroke(1.dp, EmeraldSuccess.copy(alpha = 0.6f)),
+                    modifier = Modifier
+                        .heightIn(min = 40.dp)
+                        .testTag("btn_add_call_reminder")
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, tint = EmeraldSuccess, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Agregar horario", color = EmeraldSuccess, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            if (reminders.isEmpty()) {
+                Text(
+                    text = "Aún no programaste bloques de llamada. Agregá tu horario preferido y la app te avisa.",
+                    color = TextMuted,
+                    fontSize = 11.5.sp
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    reminders.forEach { reminder ->
+                        val hourText = timeFormatter.format(Date(reminder.triggerAtMs))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(SlateBackground)
+                                .border(1.dp, SlateCardBorder, RoundedCornerShape(10.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        text = "⏰ $hourText",
+                                        color = PsaCyanGlow,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 13.sp
+                                    )
+                                    Text(
+                                        text = reminder.title,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (reminder.note.isNotBlank()) {
+                                    Text(
+                                        text = reminder.note,
+                                        color = TextMuted,
+                                        fontSize = 10.5.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Switch(
+                                    checked = reminder.isEnabled,
+                                    onCheckedChange = { onToggleReminder(reminder, it) },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.Black,
+                                        checkedTrackColor = EmeraldSuccess
+                                    )
+                                )
+                                IconButton(
+                                    onClick = { onDeleteReminder(reminder) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Eliminar recordatorio",
+                                        tint = RoseError,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PsaCreateCallReminderDialog(
+    hourOfDay: Int,
+    minute: Int,
+    onDismiss: () -> Unit,
+    onSave: (title: String, note: String) -> Unit
+) {
+    val formatted = String.format(Locale.ROOT, "%02d:%02d", hourOfDay, minute)
+    var title by remember(hourOfDay, minute) { mutableStateOf("Tanda de llamadas $formatted") }
+    var note by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "⏰ Programar Recordatorio ($formatted)",
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Título", fontSize = 12.sp) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Nota (ej: Llamar referidos de zona norte)", fontSize = 12.sp) },
+                    maxLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(title, note) },
+                colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) {
+                Text("Guardar Alarma", color = Color.Black, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onDismiss,
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) {
+                Text("Cancelar", color = TextSecondary)
+            }
+        },
+        containerColor = SlateCard,
+        shape = RoundedCornerShape(16.dp)
+    )
+}
+
 

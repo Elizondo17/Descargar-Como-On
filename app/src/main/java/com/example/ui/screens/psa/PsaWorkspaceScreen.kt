@@ -189,12 +189,15 @@ fun PsaWorkspaceScreen(
     viewModel: MainViewModel,
     pendingConfigAction: PsaConfigAction? = null,
     onConsumeConfigAction: () -> Unit = {},
+    externalTargetTab: PsaWorkspaceTab? = null,
+    onConsumeTargetTab: () -> Unit = {},
     showDashboardNav: Boolean = false,
     showSuperuserNav: Boolean = false,
     showScriptsNav: Boolean = false,
     showAutomationNav: Boolean = false,
     onNavigateAppTab: (AppTab) -> Unit = {},
     onOpenHelpGuide: () -> Unit = {},
+    onOpenWelcomeTutorial: () -> Unit = {},
     onClose: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -271,6 +274,13 @@ fun PsaWorkspaceScreen(
         }
     }
 
+    LaunchedEffect(externalTargetTab) {
+        if (externalTargetTab != null) {
+            navigateToTab(externalTargetTab)
+            onConsumeTargetTab()
+        }
+    }
+
     // Filter slots for the selected date
     val uniqueDates = remember(scheduleSlots) {
         scheduleSlots.map { it.dateKey to it.displayDate }.distinctBy { it.first }
@@ -311,6 +321,10 @@ fun PsaWorkspaceScreen(
                 onOpenHelpGuide = {
                     coroutineScope.launch { drawerState.close() }
                     onOpenHelpGuide()
+                },
+                onOpenWelcomeTutorial = {
+                    coroutineScope.launch { drawerState.close() }
+                    onOpenWelcomeTutorial()
                 },
                 onOpenPricingSettings = {
                     coroutineScope.launch { drawerState.close() }

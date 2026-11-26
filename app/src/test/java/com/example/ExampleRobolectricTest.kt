@@ -81,20 +81,6 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `anti-spam delay calculation stays within 30 to 45 bounds and respects hard floor`() {
-    val service = com.example.service.EzoAccessibilityService()
-    for (i in 1..50) {
-      val delay = service.calculateRandomDelay(30, 45)
-      assertTrue("Delay $delay should be >= 30", delay >= 30)
-      assertTrue("Delay $delay should be <= 45", delay <= 45)
-    }
-
-    // Test that hard floor of 20 seconds is enforced even if user requested an unsafe 5 seconds
-    val unsafeDelay = service.calculateRandomDelay(5, 10)
-    assertTrue("Unsafe delay should be clamped to hard floor >= 20", unsafeDelay >= 20)
-  }
-
-  @Test
   fun `user days subtraction when too many days granted by mistake`() {
     val now = System.currentTimeMillis()
     val initialDays = 30
@@ -206,39 +192,22 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `identifyCrmPackage recognizes CRM apps and rejects launchers and system UI`() {
-    // Legitimate CRM apps
-    assertEquals("EzoCRM", com.example.service.EzoAccessibilityService.identifyCrmPackage("com.ezocrm"))
-    assertEquals("WhatsApp", com.example.service.EzoAccessibilityService.identifyCrmPackage("com.whatsapp"))
-    assertEquals("WhatsApp Business", com.example.service.EzoAccessibilityService.identifyCrmPackage("com.whatsapp.w4b"))
-    assertEquals("Kommo CRM", com.example.service.EzoAccessibilityService.identifyCrmPackage("com.kommo.app"))
-    assertEquals("Telegram", com.example.service.EzoAccessibilityService.identifyCrmPackage("org.telegram.messenger"))
-
-    // System Launchers and UI must be rejected (return null)
-    org.junit.Assert.assertNull(com.example.service.EzoAccessibilityService.identifyCrmPackage("com.mi.android.globallauncher"))
-    org.junit.Assert.assertNull(com.example.service.EzoAccessibilityService.identifyCrmPackage("com.google.android.apps.nexuslauncher"))
-    org.junit.Assert.assertNull(com.example.service.EzoAccessibilityService.identifyCrmPackage("com.android.systemui"))
-    org.junit.Assert.assertNull(com.example.service.EzoAccessibilityService.identifyCrmPackage("com.android.inputmethod.latin"))
-    org.junit.Assert.assertNull(com.example.service.EzoAccessibilityService.identifyCrmPackage(""))
-  }
-
-  @Test
   fun `duplicate message strategy allows resending when contact is unmarked and reselected`() {
-    com.example.service.EzoAccessibilityService.clearProcessedRecipientsSession()
+    com.example.service.AutomationManager.clearProcessedRecipientsSession()
     val testPhone = "+54 9 11 9876-5432"
 
     // Not sent initially
-    assertFalse(com.example.service.EzoAccessibilityService.isRecipientProcessed(testPhone))
+    assertFalse(com.example.service.AutomationManager.isRecipientProcessed(testPhone))
 
     // Mark as processed in current round
-    com.example.service.EzoAccessibilityService.markRecipientProcessed(testPhone)
-    assertTrue(com.example.service.EzoAccessibilityService.isRecipientProcessed(testPhone))
+    com.example.service.AutomationManager.markRecipientProcessed(testPhone)
+    assertTrue(com.example.service.AutomationManager.isRecipientProcessed(testPhone))
     // Also matched by normalized digits
-    assertTrue(com.example.service.EzoAccessibilityService.isRecipientProcessed("5491198765432"))
+    assertTrue(com.example.service.AutomationManager.isRecipientProcessed("5491198765432"))
 
     // User unmarks / reselects for resending: unmark allows delivery again
-    com.example.service.EzoAccessibilityService.unmarkRecipientProcessed(testPhone)
-    assertFalse(com.example.service.EzoAccessibilityService.isRecipientProcessed(testPhone))
+    com.example.service.AutomationManager.unmarkRecipientProcessed(testPhone)
+    assertFalse(com.example.service.AutomationManager.isRecipientProcessed(testPhone))
   }
 
   @Test
@@ -263,18 +232,18 @@ class ExampleRobolectricTest {
 
   @Test
   fun `session locking prevents duplicate delivery across contact names and user digits`() {
-    com.example.service.EzoAccessibilityService.clearProcessedRecipientsSession()
+    com.example.service.AutomationManager.clearProcessedRecipientsSession()
     val userNumber = "2099189691481195"
 
-    assertFalse(com.example.service.EzoAccessibilityService.isRecipientProcessed(userNumber))
+    assertFalse(com.example.service.AutomationManager.isRecipientProcessed(userNumber))
 
     // Mark as processed upon message delivery
-    com.example.service.EzoAccessibilityService.markRecipientProcessed(userNumber)
-    assertTrue(com.example.service.EzoAccessibilityService.isRecipientProcessed(userNumber))
-    assertTrue(com.example.service.EzoAccessibilityService.isRecipientProcessed("2099189691481195"))
+    com.example.service.AutomationManager.markRecipientProcessed(userNumber)
+    assertTrue(com.example.service.AutomationManager.isRecipientProcessed(userNumber))
+    assertTrue(com.example.service.AutomationManager.isRecipientProcessed("2099189691481195"))
 
     // Different user number is not blocked
-    assertFalse(com.example.service.EzoAccessibilityService.isRecipientProcessed("2099189699999999"))
+    assertFalse(com.example.service.AutomationManager.isRecipientProcessed("2099189699999999"))
   }
 
   @Test
@@ -379,39 +348,8 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `banking safety deactivation helper handles uninstantiated service gracefully`() {
+  fun `setup guide notification permission check succeeds under robolectric`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
-    // When service is not instantiated, disableServiceCompletely returns false and falls back to opening settings
-    val result = com.example.service.EzoAccessibilityService.disableServiceCompletely(context)
-    assertFalse(result)
-  }
-
-  @Test
-  fun `executeKillSwitch clears notifications, sets banking mode and updates states`() {
-    val context = ApplicationProvider.getApplicationContext<Context>()
-    val result = com.example.service.EzoAccessibilityService.executeKillSwitch(context)
-    assertFalse(result) // uninstantiated service returns false and falls back safely
-    assertTrue(com.example.service.EzoAccessibilityService.isBankingMode.value)
-    assertTrue(com.example.service.EzoAccessibilityService.isAppPaused.value)
-    assertFalse(com.example.service.EzoAccessibilityService.isServiceConnected.value)
-  }
-
-  @Test
-  fun `setAppPaused toggles paused state correctly`() {
-    val context = ApplicationProvider.getApplicationContext<Context>()
-    com.example.service.EzoAccessibilityService.setAppPaused(context, true)
-    assertTrue(com.example.service.EzoAccessibilityService.isAppPaused.value)
-
-    com.example.service.EzoAccessibilityService.setAppPaused(context, false)
-    assertFalse(com.example.service.EzoAccessibilityService.isAppPaused.value)
-  }
-
-  @Test
-  fun `setup guide helper verifies accessibility and notification status accurately`() {
-    val context = ApplicationProvider.getApplicationContext<Context>()
-    val accessibilityEnabled = com.example.service.EzoAccessibilityService.isAccessibilityEnabledInSettings(context)
-    assertFalse(accessibilityEnabled)
-
     val notificationsEnabled = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
     assertTrue(notificationsEnabled)
   }

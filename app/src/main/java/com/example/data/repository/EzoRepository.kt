@@ -7,10 +7,12 @@ import com.example.data.model.AgendaSyncEntityType
 import com.example.data.model.AgendaSyncOperation
 import com.example.data.model.AgendaSyncStatus
 import com.example.data.model.BusinessProfile
+import com.example.data.model.CallReminderEntity
 import com.example.data.model.DeliveryLog
 import com.example.data.model.DeliveryStats
 import com.example.data.model.HierarchyTreeBuilder
 import com.example.data.model.PendingAgendaSyncEntity
+import com.example.data.model.ReadNotificationEntity
 import com.example.data.model.ScannedChat
 import com.example.data.model.ScriptFolder
 import com.example.data.model.ScriptItem
@@ -18,6 +20,7 @@ import com.example.data.model.SalesKnowledgeItem
 import com.example.data.model.MemoryEnhancedSalesAdvice
 import com.example.data.model.PsaContactLead
 import com.example.data.model.PsaHomeVisit
+import com.example.data.model.PsaLeadStatus
 import com.example.data.model.PsaPostSaleInstallation
 import com.example.data.model.PsaPostSaleStatus
 import com.example.data.model.PsaVisitStatus
@@ -60,6 +63,8 @@ class EzoRepository(
     private val psaContactDao = database.psaContactDao()
     private val psaPostSaleDao = database.psaPostSaleDao()
     private val agendaSyncDao = database.agendaSyncDao()
+    private val callReminderDao = database.callReminderDao()
+    private val readNotificationDao = database.readNotificationDao()
 
     private val prefs = context?.getSharedPreferences("como_on_auth_prefs", Context.MODE_PRIVATE)
     val cloudTeamRepository: FirestoreTeamRepository? =
@@ -105,6 +110,8 @@ class EzoRepository(
     val allPsaLeads: Flow<List<com.example.data.model.PsaContactLead>> = psaContactDao.getAllLeads()
     val allPsaInteractions: Flow<List<com.example.data.model.PsaContactInteraction>> = psaContactDao.getAllInteractions()
     val allPostSaleInstallations: Flow<List<PsaPostSaleInstallation>> = psaPostSaleDao.getAllInstallations()
+    val allCallReminders: Flow<List<CallReminderEntity>> = callReminderDao.getAllReminders()
+    val readNotificationIds: Flow<List<String>> = readNotificationDao.getReadNotificationIds()
 
     val allScannedChats: Flow<List<ScannedChat>> = scannedChatDao.getAllScannedChats()
     val selectedScannedChats: Flow<List<ScannedChat>> = scannedChatDao.getSelectedChats()
@@ -772,10 +779,13 @@ class EzoRepository(
         updateRequired: Boolean,
         requiredVersionCode: Int,
         reason: String,
-        syncToCloud: Boolean = true
+        syncToCloud: Boolean = true,
+        userFallback: UserAccount? = null
     ): Result<Unit> {
         val existing = userDao.getUserById(userId)
-            ?: return Result.failure(IllegalStateException("No se encontró el usuario en caché local."))
+            ?: userFallback?.email?.takeIf { it.isNotBlank() }?.let { userDao.getUserByEmail(it) }
+            ?: userFallback
+            ?: return Result.failure(IllegalStateException("No se encontró el usuario para actualizar su estado."))
         val cleanReason = reason.trim().take(300)
         val safeRequiredCode = requiredVersionCode.coerceIn(0, 100000)
         val updatedUser = existing.copy(
@@ -784,14 +794,22 @@ class EzoRepository(
             updateLockReason = cleanReason
         )
         val cloudRepo = cloudTeamRepository
-        if (syncToCloud && updatedUser.email.isNotBlank() && cloudRepo != null) {
-            val cloudRes = cloudRepo.updateUserInCloud(updatedUser)
+        if (syncToCloud && cloudRepo != null) {
+            if (updatedUser.email.isBlank()) {
+                return Result.failure(IllegalArgumentException("El usuario no tiene correo Google vinculado en la nube."))
+            }
+            val cloudRes = cloudRepo.updateUserUpdateLockInCloud(
+                emailRaw = updatedUser.email,
+                updateRequired = updateRequired,
+                requiredVersionCode = safeRequiredCode,
+                reason = cleanReason
+            )
             if (cloudRes.isFailure) {
                 return cloudRes
             }
         }
-        userDao.setUserUpdateLock(userId, updateRequired, safeRequiredCode, cleanReason)
-        if (_currentUser.value?.id == userId) {
+        userDao.insertUser(updatedUser)
+        if (_currentUser.value?.id == userId || (_currentUser.value?.email?.isNotBlank() == true && _currentUser.value?.email == updatedUser.email)) {
             _currentUser.value = updatedUser
         }
         return Result.success(Unit)
@@ -1002,25 +1020,16 @@ class EzoRepository(
     }
 
     suspend fun toggleChatSelection(id: String, selected: Boolean) {
-        if (selected) {
-            com.example.service.EzoAccessibilityService.unmarkRecipientProcessed(id)
-        }
         scannedChatDao.setSelected(id, selected)
     }
 
     suspend fun setSelectedForChatIds(ids: List<String>, selected: Boolean) {
         if (ids.isNotEmpty()) {
-            if (selected) {
-                ids.forEach { com.example.service.EzoAccessibilityService.unmarkRecipientProcessed(it) }
-            }
             scannedChatDao.setSelectedForIds(ids, selected)
         }
     }
 
     suspend fun setAllChatsSelected(selected: Boolean) {
-        if (selected) {
-            com.example.service.EzoAccessibilityService.clearProcessedRecipientsSession()
-        }
         scannedChatDao.setAllSelected(selected)
     }
 
@@ -1823,9 +1832,23 @@ class EzoRepository(
         val messageEvents = deliveryLogs.map { it.timestamp to (it.status == "SUCCESS") } +
             psaMessageInteractions.map { it.timestampMs to (it.result == "SUCCESS" || it.result == "RESCHEDULED") }
         val callEvents = callInteractions.map { it.timestampMs }
-        val buckets = HierarchyTreeBuilder.buildLast7DaysBuckets(
+        val activeVisits = visits.filter { it.status != PsaVisitStatus.CANCELADA }
+        val unmatchedLeadAppointments = leads.filter { lead ->
+            lead.status == PsaLeadStatus.APPOINTMENT_SET &&
+                activeVisits.none { v ->
+                    v.customerName.equals(lead.name, ignoreCase = true) ||
+                        (v.phone.isNotBlank() && v.phone == lead.phone)
+                }
+        }.map { it.lastContactDateMs.takeIf { ts -> ts > 0L } ?: it.createdAtMs }
+        val appointmentEvents = activeVisits.map { it.createdAtMs } + unmatchedLeadAppointments
+        val demoEvents = visits
+            .filter { it.diagnosticTimestampMs > 0L || it.chlorinePpm > 0f || it.hardnessPpm > 0 }
+            .map { it.diagnosticTimestampMs.takeIf { ts -> ts > 0L } ?: it.updatedAtMs }
+        val buckets = HierarchyTreeBuilder.buildLast30DaysBuckets(
             deliveryTimestampsAndSuccess = messageEvents,
             callTimestamps = callEvents,
+            appointmentTimestamps = appointmentEvents,
+            demoTimestamps = demoEvents,
             nowMs = nowMs
         )
         val recentActivityJson = HierarchyTreeBuilder.serializeActivityBuckets(buckets)
@@ -1855,6 +1878,43 @@ class EzoRepository(
         cloudRepo.upsertSellerStats(stats)
     }
 
+    // Call Reminders & Notification Read Persistence
+    suspend fun upsertCallReminder(reminder: CallReminderEntity) {
+        callReminderDao.insertReminder(reminder)
+    }
+
+    suspend fun setCallReminderEnabled(id: String, enabled: Boolean) {
+        callReminderDao.setReminderEnabled(id, enabled)
+    }
+
+    suspend fun deleteCallReminder(id: String) {
+        callReminderDao.deleteReminderById(id)
+    }
+
+    suspend fun getAllCallRemindersOnce(): List<CallReminderEntity> =
+        callReminderDao.getAllRemindersOnce()
+
+    suspend fun markNotificationRead(notifId: String) {
+        if (notifId.isBlank()) return
+        readNotificationDao.markRead(ReadNotificationEntity(notifId = notifId))
+    }
+
+    suspend fun markAllNotificationsRead(notifIds: List<String>) {
+        if (notifIds.isEmpty()) return
+        val now = System.currentTimeMillis()
+        readNotificationDao.markAllRead(
+            notifIds.filter { it.isNotBlank() }.map { ReadNotificationEntity(notifId = it, readAtMs = now) }
+        )
+    }
+
+    fun isPrePeakReminderEnabled(): Boolean {
+        return prefs?.getBoolean("pre_peak_call_reminder_enabled", false) ?: false
+    }
+
+    fun setPrePeakReminderEnabled(enabled: Boolean) {
+        prefs?.edit()?.putBoolean("pre_peak_call_reminder_enabled", enabled)?.apply()
+    }
+
     // Font Scale & Modo Chicato Persistence
     fun getFontScaleLevel(): com.example.ui.theme.FontScaleLevel {
         val name = prefs?.getString("font_scale_level", com.example.ui.theme.FontScaleLevel.NORMAL.name)
@@ -1875,6 +1935,14 @@ class EzoRepository(
 
     fun saveHasSeenSetupGuide(seen: Boolean) {
         prefs?.edit()?.putBoolean("has_seen_setup_guide", seen)?.apply()
+    }
+
+    fun hasSeenWelcomeTutorial(): Boolean {
+        return prefs?.getBoolean("has_seen_welcome_tutorial", false) ?: false
+    }
+
+    fun saveHasSeenWelcomeTutorial(seen: Boolean) {
+        prefs?.edit()?.putBoolean("has_seen_welcome_tutorial", seen)?.apply()
     }
 
     // PSA Financing & Cuotas Persistence

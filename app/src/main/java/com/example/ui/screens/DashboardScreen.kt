@@ -58,7 +58,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.service.EzoAccessibilityService
 import com.example.ui.components.DashboardAnalyticsChartsSection
 import com.example.ui.components.DeliveryLogItem
 import com.example.ui.components.FirstTimeSetupGuide
@@ -93,15 +92,10 @@ fun DashboardScreen(
     val visibleHierarchyUsers by viewModel.visibleHierarchyUsers.collectAsState()
     val local7DayBuckets by viewModel.local7DayBuckets.collectAsState()
     val pendingRequestsCount by viewModel.pendingHierarchyRequestsCount.collectAsState()
-    val context = LocalContext.current
-    val isAccessibilityConnected by viewModel.isAccessibilityConnected.collectAsState()
     val hasSeenSetupGuide by viewModel.hasSeenSetupGuide.collectAsState()
     val isLargeFont = com.example.ui.theme.LocalIsLargeFontMode.current
     val isSuperuser = currentUser?.role == "SUPERUSER"
     val canViewHierarchy = isSuperuser || (currentUser?.canManageSubUsers == true) || visibleHierarchyUsers.isNotEmpty()
-    val isSystemEnabled = remember(isAccessibilityConnected) {
-        isAccessibilityConnected || EzoAccessibilityService.isAccessibilityEnabledInSettings(context)
-    }
 
     var selectedFilter by remember { mutableStateOf("ALL") }
 
@@ -214,7 +208,7 @@ fun DashboardScreen(
             }
         }
 
-        // Equipo y Pirámide Jerárquica (Superusuario o Líderes con sub-usuarios)
+        // Gestión de Equipo (Superusuario o Líderes con sub-usuarios)
         if (canViewHierarchy) {
             item {
                 Column(
@@ -256,16 +250,16 @@ fun DashboardScreen(
                             Spacer(modifier = Modifier.width(10.dp))
                             Column {
                                 Text(
-                                    text = if (isSuperuser) "Estructura Piramidal y Aprobaciones" else "Mi Equipo y Coaching",
+                                    text = if (isSuperuser) "Gestión de Equipo y Aprobaciones" else "Mi Equipo y Analíticas",
                                     color = TextPrimary,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.5.sp
                                 )
                                 Text(
                                     text = if (isSuperuser) {
-                                        "Administra árbol de vendedores, permisos y altas pendientes."
+                                        "Administra tu equipo de vendedores, métricas diarias y altas."
                                     } else {
-                                        "${visibleHierarchyUsers.size} sub-usuario(s) en tu rama para orientar."
+                                        "${visibleHierarchyUsers.size} vendedor(es) a cargo para seguir día a día."
                                     },
                                     color = TextSecondary,
                                     fontSize = 11.5.sp
@@ -307,114 +301,11 @@ fun DashboardScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isSuperuser) "Gestionar Pirámide y Sub-Usuarios" else "Ver Árbol y Coaching de Equipo",
+                            text = if (isSuperuser) "Abrir Gestión de Equipo" else "Ver Equipo y Analíticas Diarias",
                             color = Color.Black,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.5.sp
                         )
-                    }
-                }
-            }
-        }
-
-
-
-        // Modo Banco Seguro / Pausa (Limpio, sin texto repetitivo)
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (isSystemEnabled) SlateCard else EmeraldSuccess.copy(alpha = 0.1f))
-                    .border(
-                        1.dp,
-                        if (isSystemEnabled) SlateCardBorder else EmeraldSuccess.copy(alpha = 0.4f),
-                        RoundedCornerShape(16.dp)
-                    )
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(if (isSystemEnabled) AmberDelay.copy(alpha = 0.2f) else EmeraldSuccess.copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (isSystemEnabled) Icons.Default.Shield else Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = if (isSystemEnabled) AmberDelay else EmeraldSuccess,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(10.dp))
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Modo Banco Seguro",
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = if (isSystemEnabled) "Servicio activo" else "Apagado (apto para bancos)",
-                            color = if (isSystemEnabled) AmberDelay else EmeraldSuccess,
-                            fontSize = 11.5.sp
-                        )
-                    }
-                }
-
-                androidx.compose.foundation.layout.FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (isSystemEnabled) {
-                        Button(
-                            onClick = { viewModel.disableServiceForBanking(context) },
-                            modifier = Modifier
-                                .let { if (isLargeFont) it.fillMaxWidth() else it.weight(1f) }
-                                .heightIn(min = 44.dp)
-                                .testTag("disable_banking_service_button"),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = RoseError)
-                        ) {
-                            Icon(imageVector = Icons.Default.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Pausar Servicio", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    } else {
-                        Button(
-                            onClick = { viewModel.openAccessibilitySettings(context) },
-                            modifier = Modifier
-                                .let { if (isLargeFont) it.fillMaxWidth() else it.weight(1f) }
-                                .heightIn(min = 44.dp)
-                                .testTag("reactivate_service_button"),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary)
-                        ) {
-                            Icon(imageVector = Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Reactivar Servicio", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    OutlinedButton(
-                        onClick = { viewModel.openAccessibilitySettings(context) },
-                        modifier = Modifier
-                            .let { if (isLargeFont) it.fillMaxWidth() else it }
-                            .heightIn(min = 44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
-                        border = BorderStroke(1.dp, SlateCardBorder)
-                    ) {
-                        Text("Ajustes", fontSize = 12.sp)
                     }
                 }
             }

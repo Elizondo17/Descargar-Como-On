@@ -85,7 +85,9 @@ enum class TeamNotificationType(val label: String) {
     APP_UPDATE("Actualización de App"),
     SUPERUSER_GLOBAL("Aviso Global Admin"),
     SUPERUSER_DIRECT("Aviso Directo Admin"),
-    LEADER_COACHING("Mensaje de Equipo")
+    LEADER_COACHING("Mensaje de Equipo"),
+    CATALOG_UPDATE("Actualización de Catálogo"),
+    ASSIGNED_CONTACT("Contacto Asignado")
 }
 
 enum class TeamNotificationPriority(val label: String) {

@@ -948,7 +948,7 @@ private fun InteractiveQuoteStep(
         purifiers.firstOrNull { it.id == targetId } ?: purifiers.first()
     }
     val listPrice = sampleModel.price
-    val cashDiscountPct = 10.0
+    val cashDiscountPct = 0.0
     val cashTotal = (listPrice * (1.0 - cashDiscountPct / 100.0)).coerceAtLeast(0.0)
     val advanceAmount = if (includeAdvance && selectedMonths > 1) listPrice * 0.20 else 0.0
     val financedBalance = (listPrice - advanceAmount).coerceAtLeast(0.0)
@@ -1026,7 +1026,7 @@ private fun InteractiveQuoteStep(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     listOf(
-                        1 to "Contado (${cashDiscountPct.toInt()}% OFF)",
+                        1 to if (cashDiscountPct > 0) "Contado (${cashDiscountPct.toInt()}% OFF)" else "Contado",
                         3 to "3 Cuotas",
                         6 to "6 Cuotas",
                         12 to "12 Cuotas"
@@ -1091,7 +1091,7 @@ private fun InteractiveQuoteStep(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             text = if (selectedMonths == 1) {
-                                "TOTAL CONTADO (${cashDiscountPct.toInt()}% OFF)"
+                                if (cashDiscountPct > 0) "TOTAL CONTADO (${cashDiscountPct.toInt()}% OFF)" else "TOTAL CONTADO (PRECIO DE LISTA)"
                             } else {
                                 "CUOTA MENSUAL ($selectedMonths MESES)"
                             },

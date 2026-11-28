@@ -2,6 +2,7 @@ package com.example.ui.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -41,10 +42,13 @@ import com.example.data.model.PsaPostSaleStatus
 import com.example.data.model.SellerPerformanceStats
 import com.example.data.model.AgendaSyncStatus
 import com.example.data.model.ApprovalStatus
+import com.example.data.model.BusinessInviteEntity
+import com.example.data.model.BusinessInviteStatus
 import com.example.data.model.HierarchyRequest
 import com.example.data.model.HierarchyRequestStatus
 import com.example.data.model.HierarchyRequestType
 import com.example.data.model.HierarchyTreeBuilder
+import com.example.data.model.HourlyEffectivenessBucket
 import com.example.data.model.MensajeGlobal
 import com.example.data.model.MensajeGlobalPrioridad
 import com.example.data.model.SellerActivityBucket
@@ -63,6 +67,9 @@ import com.example.util.AppUpdateChecker
 import com.example.util.AppUpdateInfo
 import com.example.util.CallCoachingInsight
 import com.example.util.CallTimingAnalysis
+import com.example.util.FcmChannelSettings
+import com.example.util.FcmNotificationPreferences
+import com.example.util.FcmPayloadRouter
 import com.example.util.FirebaseAppDistributionHelper
 import com.example.util.FirebaseAppDistributionOutcome
 import com.example.util.LicenseEvaluationResult
@@ -119,7 +126,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val googleAuthUiState: StateFlow<GoogleAuthUiState> = _googleAuthUiState.asStateFlow()
 
     private val _isCloudGoogleConnected = MutableStateFlow(
-        repository.cloudTeamRepository?.getCurrentFirebaseUser() != null
+        runCatching {
+            val cloudRepo = repository.cloudTeamRepository
+            cloudRepo != null && cloudRepo.isFirebaseInitialized() && cloudRepo.getCurrentFirebaseUser() != null
+        }.getOrDefault(false)
     )
     val isCloudGoogleConnected: StateFlow<Boolean> = _isCloudGoogleConnected.asStateFlow()
 
@@ -238,6 +248,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _teamNotificationFeedback = MutableStateFlow<String?>(null)
     val teamNotificationFeedback: StateFlow<String?> = _teamNotificationFeedback.asStateFlow()
 
+    private val _fcmChannelSettings = MutableStateFlow(FcmNotificationPreferences.getSettings(application))
+    val fcmChannelSettings: StateFlow<FcmChannelSettings> = _fcmChannelSettings.asStateFlow()
+
+    private val _fcmDeepLinkBanner = MutableStateFlow<TeamNotification?>(null)
+    val fcmDeepLinkBanner: StateFlow<TeamNotification?> = _fcmDeepLinkBanner.asStateFlow()
+
     private val _prePeakReminderEnabled = MutableStateFlow(repository.isPrePeakReminderEnabled())
     val prePeakReminderEnabled: StateFlow<Boolean> = _prePeakReminderEnabled.asStateFlow()
 
@@ -252,6 +268,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var contactsSyncJob: Job? = null
     private var visitsSyncJob: Job? = null
     private var postSaleSyncJob: Job? = null
+    private var businessInvitesSyncJob: Job? = null
     private var sellerStatsListenerJob: Job? = null
     private var appErrorsListenerJob: Job? = null
     private var accessTokensListenerJob: Job? = null
@@ -310,6 +327,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val allPostSaleInstallations: StateFlow<List<PsaPostSaleInstallation>> = repository.allPostSaleInstallations
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val allBusinessInvites: StateFlow<List<BusinessInviteEntity>> = repository.allBusinessInvites
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val pendingAgendaSyncCount: StateFlow<Int> = repository.pendingAgendaSyncCount
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
@@ -364,6 +384,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             demoTimestamps = demoEvents
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val localHourlyEffectivenessBuckets: StateFlow<List<HourlyEffectivenessBucket>> = combine(
+        allLogs,
+        allPsaInteractions
+    ) { logs, interactions ->
+        buildHourlyEffectivenessBuckets(logs = logs, interactions = interactions)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        (8..21).map { HourlyEffectivenessBucket(hour = it) }
+    )
 
     val visibleSubordinateStats: StateFlow<List<SellerPerformanceStats>> = combine(
         currentUser,
@@ -784,15 +815,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val activePriorityBanner: StateFlow<TeamNotification?> = combine(
         _teamNotifications,
         readNotificationIds,
-        _dismissedBannerIds
-    ) { notifications, readIds, dismissedIds ->
+        _dismissedBannerIds,
+        _fcmDeepLinkBanner,
+        FcmNotificationPreferences.persistentFcmBanner
+    ) { notifications, readIds, dismissedIds, fcmTappedBanner, persistentFcmBanner ->
+        if (fcmTappedBanner != null && fcmTappedBanner.id !in dismissedIds) {
+            return@combine fcmTappedBanner
+        }
+        val settings = _fcmChannelSettings.value
+        if (persistentFcmBanner != null && persistentFcmBanner.id !in dismissedIds) {
+            val allowedByPrefs = when (persistentFcmBanner.parsedType) {
+                TeamNotificationType.CATALOG_UPDATE -> settings.notifyCatalogUpdates
+                TeamNotificationType.ASSIGNED_CONTACT -> settings.notifyAssignedContacts
+                else -> true
+            }
+            if (allowedByPrefs) {
+                return@combine persistentFcmBanner
+            }
+        }
         notifications.firstOrNull { notif ->
-            notif.id !in readIds &&
+            val allowedByPrefs = when (notif.parsedType) {
+                TeamNotificationType.CATALOG_UPDATE -> settings.notifyCatalogUpdates
+                TeamNotificationType.ASSIGNED_CONTACT -> settings.notifyAssignedContacts
+                else -> true
+            }
+            allowedByPrefs &&
+                notif.id !in readIds &&
                 notif.id !in dismissedIds &&
                 notif.parsedType != TeamNotificationType.SUPERUSER_GLOBAL &&
                 (notif.parsedPriority == TeamNotificationPriority.IMPORTANT ||
                     notif.parsedPriority == TeamNotificationPriority.URGENT ||
-                    notif.parsedType == TeamNotificationType.APP_UPDATE)
+                    notif.parsedType == TeamNotificationType.APP_UPDATE ||
+                    notif.parsedType == TeamNotificationType.CATALOG_UPDATE ||
+                    notif.parsedType == TeamNotificationType.ASSIGNED_CONTACT)
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
@@ -845,6 +900,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _scheduleIntervalConfig.value = PsaScheduleManager.getScheduleIntervalConfig(application)
         _visitDurationOverrides.value = PsaScheduleManager.getVisitDurationOverrides(application)
         _roleVisibilityConfig.value = repository.getRoleVisibilityConfig()
+        FcmNotificationPreferences.ensurePersistentBannerLoaded(application)
 
         viewModelScope.launch {
             repository.initializeDefaultsIfNeeded()
@@ -1011,7 +1067,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun checkForAppUpdate(isAutomaticStartup: Boolean = false) {
         val cloudRepo = repository.cloudTeamRepository ?: return
-        if (cloudRepo.getCurrentFirebaseUser() == null) return
+        if (!cloudRepo.isFirebaseInitialized() || cloudRepo.getCurrentFirebaseUser() == null) {
+            if (!isAutomaticStartup) {
+                _appUpdateCheckFeedback.value = "Firebase no está inicializado en este APK."
+            }
+            return
+        }
         val online = LicenseSecurityGuard.hasInternetConnectivity(getApplication())
         if (!online) {
             if (!isAutomaticStartup) {
@@ -1258,6 +1319,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun trySilentCloudSignIn(activityContext: Context) {
         val cloudRepo = repository.cloudTeamRepository ?: return
+        if (!cloudRepo.isFirebaseInitialized()) {
+            _isCloudGoogleConnected.value = false
+            _googleAuthUiState.value = GoogleAuthUiState.Idle
+            return
+        }
         val existingFb = cloudRepo.getCurrentFirebaseUser()
         _isCloudGoogleConnected.value = existingFb != null
         val online = LicenseSecurityGuard.hasInternetConnectivity(getApplication())
@@ -1291,7 +1357,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         fun signInWithGoogle(activityContext: Context, onSuccess: () -> Unit = {}) {
         val cloudRepo = repository.cloudTeamRepository
-        if (cloudRepo == null) {
+        if (cloudRepo == null || !cloudRepo.isFirebaseInitialized()) {
+            _isCloudGoogleConnected.value = false
             _googleAuthUiState.value = GoogleAuthUiState.Error(
                 "Firebase no está inicializado en este APK. Revisa google-services.json."
             )
@@ -1328,7 +1395,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun recheckCloudAccessInternal(silentIfNotLocked: Boolean = false) {
         val cloudRepo = repository.cloudTeamRepository
-        if (cloudRepo == null) {
+        if (cloudRepo == null || !cloudRepo.isFirebaseInitialized()) {
+            _isCloudGoogleConnected.value = false
             if (!silentIfNotLocked) {
                 _lockVerificationFeedback.value = "Firebase no está configurado en este APK para validar en la nube."
             }
@@ -1439,9 +1507,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startCloudTeamListeners(signedUser: UserAccount) {
         val cloudRepo = repository.cloudTeamRepository ?: return
+        if (!cloudRepo.isFirebaseInitialized()) return
         val deviceId = cloudRepo.getOrCreateDeviceId()
         val firebaseUid = cloudRepo.getCurrentFirebaseUser()?.uid.orEmpty()
         _isCloudGoogleConnected.value = firebaseUid.isNotBlank()
+        syncFcmRegistrationNow(signedUser)
 
         userListenerJob?.cancel()
         userListenerJob = viewModelScope.launch {
@@ -1577,14 +1647,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _sellerPerformanceBoard.value = stats
                     }
                 }
-                if (signedUser.canManageSubUsers) {
-                    hierarchyRequestsListenerJob = viewModelScope.launch {
-                        cloudRepo.observeMyHierarchyRequests(signedUser.normalizedEmail).collect { requests ->
-                            _hierarchyRequests.value = requests
-                        }
+                hierarchyRequestsListenerJob = viewModelScope.launch {
+                    cloudRepo.observeMyHierarchyRequests(signedUser.normalizedEmail).collect { requests ->
+                        _hierarchyRequests.value = requests
                     }
-                } else {
-                    _hierarchyRequests.value = emptyList()
                 }
             } else {
                 _subordinateUsers.value = emptyList()
@@ -1597,6 +1663,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         contactsSyncJob?.cancel()
         visitsSyncJob?.cancel()
         postSaleSyncJob?.cancel()
+        businessInvitesSyncJob?.cancel()
         if (firebaseUid.isNotBlank()) {
             workspaceBootstrapJob = viewModelScope.launch {
                 val lastUid = cloudRepo.getLastSyncedUid()
@@ -1623,6 +1690,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         repository.replaceRemotePostSale(snapshot.items, isFromCache = snapshot.isFromCache)
                     }
                 }
+                businessInvitesSyncJob = launch {
+                    cloudRepo.observeSellerBusinessInvites(firebaseUid).collect { snapshot ->
+                        repository.replaceRemoteBusinessInvites(snapshot.items, isFromCache = snapshot.isFromCache)
+                    }
+                }
             }
         }
     }
@@ -1638,6 +1710,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         contactsSyncJob?.cancel()
         visitsSyncJob?.cancel()
         postSaleSyncJob?.cancel()
+        businessInvitesSyncJob?.cancel()
         sellerStatsListenerJob?.cancel()
         appErrorsListenerJob?.cancel()
         accessTokensListenerJob?.cancel()
@@ -1653,6 +1726,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         contactsSyncJob = null
         visitsSyncJob = null
         postSaleSyncJob = null
+        businessInvitesSyncJob = null
         sellerStatsListenerJob = null
         appErrorsListenerJob = null
         accessTokensListenerJob = null
@@ -1660,6 +1734,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mensajesGlobalesListenerJob = null
         _mensajesGlobales.value = emptyList()
         _dismissedGlobalBannerIds.value = emptySet()
+        _fcmDeepLinkBanner.value = null
     }
 
     fun flushPendingAppErrorsNow(manualFeedback: Boolean = false) {
@@ -1824,32 +1899,69 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         maxDevices: Int,
         notes: String
     ) {
+        submitRecruitFromBusinessFlow(
+            inviteId = null,
+            targetName = targetUsername,
+            targetEmail = targetEmail,
+            phone = "",
+            suggestedDays = suggestedDays,
+            notes = notes,
+            maxDevices = maxDevices
+        )
+    }
+
+    fun submitRecruitFromBusinessFlow(
+        inviteId: String?,
+        targetName: String,
+        targetEmail: String,
+        phone: String,
+        suggestedDays: Int,
+        notes: String,
+        maxDevices: Int = 1
+    ) {
         val cloudRepo = repository.cloudTeamRepository
         val viewer = currentUser.value
         if (cloudRepo == null || viewer == null) {
             _hierarchyActionFeedback.value = "Inicia sesión con Google para enviar solicitudes."
             return
         }
-        if (!viewer.canManageSubUsers && viewer.role != "SUPERUSER") {
-            _hierarchyActionFeedback.value = "El Superusuario aún no habilitó la creación de sub-usuarios en tu cuenta."
-            return
-        }
         if (_isHierarchyActionBusy.value) return
         viewModelScope.launch {
             _isHierarchyActionBusy.value = true
             try {
+                val combinedNotes = buildString {
+                    if (phone.isNotBlank()) append("Tel: ${phone.trim()}")
+                    if (notes.isNotBlank()) {
+                        if (isNotEmpty()) append(" • ")
+                        append(notes.trim())
+                    }
+                }.ifBlank { "Alta desde Presentación de Negocios PSA" }
+
                 cloudRepo.submitHierarchyRequest(
                     requestType = HierarchyRequestType.NEW_SUB_USER,
                     parentEmailRaw = viewer.normalizedEmail,
                     parentName = viewer.username,
                     targetEmailRaw = targetEmail,
-                    targetUsername = targetUsername,
+                    targetUsername = targetName,
                     suggestedDays = suggestedDays,
                     maxDevices = maxDevices,
-                    notes = notes
+                    notes = combinedNotes
                 ).fold(
-                    onSuccess = {
-                        _hierarchyActionFeedback.value = "✅ Solicitud enviada. El usuario quedará inactivo hasta que el Superusuario lo habilite."
+                    onSuccess = { createdReq ->
+                        if (!inviteId.isNullOrBlank()) {
+                            val existingInvite = allBusinessInvites.value.firstOrNull { it.id == inviteId }
+                            if (existingInvite != null) {
+                                repository.saveBusinessInvite(
+                                    existingInvite.copy(
+                                        email = targetEmail.trim().lowercase(),
+                                        status = BusinessInviteStatus.JOINED_TEAM.name,
+                                        linkedRequestId = createdReq.id,
+                                        updatedAtMs = System.currentTimeMillis()
+                                    )
+                                )
+                            }
+                        }
+                        _hierarchyActionFeedback.value = "✅ Solicitud enviada. El nuevo vendedor quedará pendiente de activación por el Superusuario."
                     },
                     onFailure = { err ->
                         _hierarchyActionFeedback.value = err.message ?: "No se pudo enviar la solicitud."
@@ -3038,6 +3150,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 PsaPricingCloudSyncHelper.saveCachedCloudPayloadJson(getApplication(), mergedJson)
                 _cloudPricingSnapshots.value = parsed
                 _pricingSyncBannerNotice.value = "Precios y cuotas publicados para todo tu equipo (${countryCode.uppercase()})."
+                val cleanCode = countryCode.uppercase()
+                val senderName = currentUser.value?.username.orEmpty()
+                val title = "Catálogo PSA $cleanCode actualizado"
+                val body = "Se publicaron nuevos precios y planes de cuotas para $cleanCode. Revisa el cotizador."
+                cloudRepo.publishTeamNotification(
+                    type = TeamNotificationType.CATALOG_UPDATE,
+                    priority = TeamNotificationPriority.IMPORTANT,
+                    targetMode = TeamNotificationTargetMode.ALL,
+                    title = title,
+                    body = body,
+                    senderNameOverride = senderName
+                )
+                cloudRepo.enqueueFcmDispatch(
+                    category = TeamNotificationType.CATALOG_UPDATE,
+                    priority = TeamNotificationPriority.IMPORTANT,
+                    targetMode = TeamNotificationTargetMode.ALL,
+                    title = title,
+                    body = body,
+                    senderNameOverride = senderName
+                )
             }
         }
     }
@@ -3504,7 +3636,126 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissPriorityBanner(notifId: String) {
         if (notifId.isBlank()) return
+        val ctx = getApplication<Application>()
         _dismissedBannerIds.value = _dismissedBannerIds.value + notifId
+        if (_fcmDeepLinkBanner.value?.id == notifId) {
+            _fcmDeepLinkBanner.value = null
+        }
+        FcmNotificationPreferences.clearPersistentFcmBanner(ctx, notifId)
+        val helper = com.example.service.NotificationHelper(ctx)
+        helper.cancelNotificationById(helper.persistentNotificationId(notifId))
+        helper.cancelNotificationById(notifId.hashCode())
+    }
+
+    fun setCatalogNotificationsEnabled(enabled: Boolean) {
+        val ctx = getApplication<Application>()
+        FcmNotificationPreferences.setCatalogUpdatesEnabled(ctx, enabled)
+        FcmNotificationPreferences.syncTopicSubscriptions(ctx)
+        val updatedSettings = FcmNotificationPreferences.getSettings(ctx)
+        _fcmChannelSettings.value = updatedSettings
+        persistFcmSettingsToLocalAndCloud(
+            token = FcmNotificationPreferences.getCachedToken(ctx),
+            notifyCatalog = updatedSettings.notifyCatalogUpdates,
+            notifyContacts = updatedSettings.notifyAssignedContacts
+        )
+    }
+
+    fun setAssignedContactsNotificationsEnabled(enabled: Boolean) {
+        val ctx = getApplication<Application>()
+        FcmNotificationPreferences.setAssignedContactsEnabled(ctx, enabled)
+        FcmNotificationPreferences.syncTopicSubscriptions(ctx)
+        val updatedSettings = FcmNotificationPreferences.getSettings(ctx)
+        _fcmChannelSettings.value = updatedSettings
+        persistFcmSettingsToLocalAndCloud(
+            token = FcmNotificationPreferences.getCachedToken(ctx),
+            notifyCatalog = updatedSettings.notifyCatalogUpdates,
+            notifyContacts = updatedSettings.notifyAssignedContacts
+        )
+    }
+
+    fun consumeFcmTapIntent(intent: Intent?): Boolean {
+        if (intent == null) return false
+        val ctx = getApplication<Application>()
+        val settings = FcmNotificationPreferences.getSettings(ctx)
+        val extracted = FcmPayloadRouter.extractBannerFromTapIntent(
+            intent = intent,
+            catalogEnabled = settings.notifyCatalogUpdates,
+            assignedContactsEnabled = settings.notifyAssignedContacts
+        ) ?: return false
+
+        val matching = _teamNotifications.value.firstOrNull { it.id == extracted.id }
+        val bannerNotif = matching ?: extracted
+        _dismissedBannerIds.value = _dismissedBannerIds.value - bannerNotif.id
+        _fcmDeepLinkBanner.value = bannerNotif
+        FcmNotificationPreferences.savePersistentFcmBanner(ctx, bannerNotif)
+
+        val helper = com.example.service.NotificationHelper(ctx)
+        if (intent.hasExtra(FcmNotificationPreferences.EXTRA_FCM_SYSTEM_NOTIFICATION_ID)) {
+            val sysId = intent.getIntExtra(FcmNotificationPreferences.EXTRA_FCM_SYSTEM_NOTIFICATION_ID, 0)
+            if (sysId != 0) helper.cancelNotificationById(sysId)
+        }
+        helper.cancelNotificationById(helper.persistentNotificationId(bannerNotif.id))
+        helper.cancelNotificationById(bannerNotif.id.hashCode())
+
+        intent.removeExtra(FcmNotificationPreferences.EXTRA_OPEN_FROM_FCM_BANNER)
+        intent.removeExtra(FcmNotificationPreferences.EXTRA_OPEN_MAIN_SCREEN)
+        intent.removeExtra(FcmNotificationPreferences.EXTRA_FCM_SYSTEM_NOTIFICATION_ID)
+        intent.removeExtra(FcmNotificationPreferences.EXTRA_FCM_NOTIF_ID)
+        intent.removeExtra("OPEN_TEAM_NOTIF_ID")
+        intent.removeExtra("EXTRA_ALERT_ID")
+        intent.removeExtra("google.message_id")
+        if (intent.action == FcmNotificationPreferences.ACTION_OPEN_MAIN_BANNER ||
+            intent.action == FcmNotificationPreferences.ACTION_OPEN_MAIN_SCREEN
+        ) {
+            intent.action = Intent.ACTION_MAIN
+        }
+        return true
+    }
+
+    private fun syncFcmRegistrationNow(user: UserAccount) {
+        val ctx = getApplication<Application>()
+        FcmNotificationPreferences.syncTopicSubscriptions(ctx)
+        val cachedToken = FcmNotificationPreferences.getCachedToken(ctx)
+        val settings = FcmNotificationPreferences.getSettings(ctx)
+        _fcmChannelSettings.value = settings
+        if (cachedToken.isNotBlank() && cachedToken != user.fcmToken) {
+            persistFcmSettingsToLocalAndCloud(
+                token = cachedToken,
+                notifyCatalog = settings.notifyCatalogUpdates,
+                notifyContacts = settings.notifyAssignedContacts
+            )
+        }
+        FcmNotificationPreferences.fetchCurrentFcmToken(ctx) { token ->
+            persistFcmSettingsToLocalAndCloud(
+                token = token,
+                notifyCatalog = settings.notifyCatalogUpdates,
+                notifyContacts = settings.notifyAssignedContacts
+            )
+        }
+    }
+
+    private fun persistFcmSettingsToLocalAndCloud(
+        token: String,
+        notifyCatalog: Boolean,
+        notifyContacts: Boolean
+    ) {
+        val userEmail = currentUser.value?.normalizedEmail.orEmpty()
+        viewModelScope.launch {
+            if (userEmail.isNotBlank()) {
+                repository.updateLocalFcmSettings(
+                    email = userEmail,
+                    token = token,
+                    updatedAtMs = System.currentTimeMillis(),
+                    notifyCatalog = notifyCatalog,
+                    notifyContacts = notifyContacts
+                )
+            }
+            repository.cloudTeamRepository?.syncOwnFcmSettingsIfSignedIn(
+                token = token.takeIf { it.isNotBlank() },
+                notifyCatalogUpdates = notifyCatalog,
+                notifyAssignedContacts = notifyContacts
+            )
+        }
     }
 
     fun dismissGlobalBannerTemporarily(mensajeId: String) {
@@ -3573,7 +3824,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         priority: TeamNotificationPriority,
         title: String,
         body: String,
-        actionUrl: String = ""
+        actionUrl: String = "",
+        notifCategory: TeamNotificationType? = null
     ) {
         val cloudRepo = repository.cloudTeamRepository
         if (cloudRepo == null) {
@@ -3584,12 +3836,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _teamNotificationFeedback.value = "Solo el Superusuario puede enviar avisos administrativos."
             return
         }
-        val notifType = if (targetMode == TeamNotificationTargetMode.ALL) {
+        val notifType = notifCategory ?: if (targetMode == TeamNotificationTargetMode.ALL) {
             TeamNotificationType.SUPERUSER_GLOBAL
         } else {
             TeamNotificationType.SUPERUSER_DIRECT
         }
         val senderDisplayName = currentUser.value?.username.orEmpty()
+        val recipientToken = if (targetMode == TeamNotificationTargetMode.USER) {
+            allUsers.value.firstOrNull { it.email.equals(targetEmail, ignoreCase = true) }?.fcmToken.orEmpty()
+        } else {
+            ""
+        }
         viewModelScope.launch {
             val globalPrioridad = when (priority) {
                 TeamNotificationPriority.URGENT -> MensajeGlobalPrioridad.URGENTE
@@ -3616,11 +3873,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 actionUrl = actionUrl,
                 senderNameOverride = senderDisplayName
             )
+            cloudRepo.enqueueFcmDispatch(
+                category = notifType,
+                priority = priority,
+                targetMode = targetMode,
+                targetEmailRaw = targetEmail,
+                targetTokenRaw = recipientToken,
+                title = title,
+                body = body,
+                actionUrl = actionUrl,
+                senderNameOverride = senderDisplayName
+            )
             if (notifResult.isSuccess || bannerResult?.isSuccess == true) {
                 val scopeLabel = if (targetMode == TeamNotificationTargetMode.ALL) {
-                    "todos los vendedores (BannerAviso + Campanita)"
+                    "todos los vendedores (Banner + Push FCM)"
+                } else if (recipientToken.length >= 10) {
+                    "$targetEmail (Campanita + Push FCM)"
                 } else {
-                    targetEmail
+                    "$targetEmail (Campanita en app)"
                 }
                 _teamNotificationFeedback.value = "✅ Aviso enviado a $scopeLabel."
             } else {
@@ -3666,12 +3936,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val readIds = readNotificationIds.value
         val ctx = getApplication<Application>()
+        val channelSettings = FcmNotificationPreferences.getSettings(ctx)
         val prefs = ctx.getSharedPreferences("team_notif_os_cache", Context.MODE_PRIVATE)
         val shownIds = prefs.getStringSet("shown_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
         var addedAny = false
         notifications
             .filter { notif ->
-                notif.id.isNotBlank() &&
+                val allowedByPrefs = when (notif.parsedType) {
+                    TeamNotificationType.CATALOG_UPDATE -> channelSettings.notifyCatalogUpdates
+                    TeamNotificationType.ASSIGNED_CONTACT -> channelSettings.notifyAssignedContacts
+                    else -> true
+                }
+                allowedByPrefs &&
+                    notif.id.isNotBlank() &&
                     notif.id !in readIds &&
                     notif.id !in shownIds &&
                     notif.senderEmail.lowercase() != viewerEmail.lowercase()
@@ -3683,7 +3960,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     title = notif.title,
                     body = notif.body,
                     isAppUpdate = notif.parsedType == TeamNotificationType.APP_UPDATE,
-                    senderName = notif.senderName
+                    senderName = notif.senderName,
+                    type = notif.parsedType,
+                    priority = notif.parsedPriority,
+                    actionUrl = notif.actionUrl
                 )
                 shownIds.add(notif.id)
                 addedAny = true
@@ -3778,6 +4058,104 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             CallReminderScheduler.cancelReminder(getApplication(), prePeakId)
         }
+    }
+
+    // --- BUSINESS INVITES & LOCAL REMINDERS ---
+
+    fun saveBusinessInvite(context: Context, invite: BusinessInviteEntity) {
+        val viewer = currentUser.value
+        val enriched = invite.copy(
+            sellerEmail = invite.sellerEmail.ifBlank { viewer?.normalizedEmail.orEmpty() },
+            updatedAtMs = System.currentTimeMillis()
+        )
+        viewModelScope.launch {
+            repository.saveBusinessInvite(enriched)
+            val reminderId = "biz_inv_${enriched.id}"
+            if (enriched.reminderEnabled && enriched.reminderAtMs > System.currentTimeMillis() + 5_000L) {
+                val reminder = CallReminderEntity(
+                    id = reminderId,
+                    title = "Presentación de Negocios: ${enriched.name}",
+                    triggerAtMs = enriched.reminderAtMs,
+                    note = "${enriched.presentationDate} ${enriched.presentationTime}hs • ${enriched.phone}".trim(),
+                    isEnabled = true,
+                    isAutoPeakRecommendation = false
+                )
+                repository.upsertCallReminder(reminder)
+                CallReminderScheduler.scheduleReminder(context, reminder)
+            } else {
+                CallReminderScheduler.cancelReminder(context, reminderId)
+                repository.deleteCallReminder(reminderId)
+            }
+        }
+    }
+
+    fun deleteBusinessInvite(context: Context, inviteId: String) {
+        if (inviteId.isBlank()) return
+        viewModelScope.launch {
+            val reminderId = "biz_inv_$inviteId"
+            CallReminderScheduler.cancelReminder(context, reminderId)
+            repository.deleteCallReminder(reminderId)
+            repository.deleteBusinessInvite(inviteId)
+        }
+    }
+}
+
+fun buildHourlyEffectivenessBuckets(
+    logs: List<DeliveryLog>,
+    interactions: List<PsaContactInteraction>,
+    startHour: Int = 8,
+    endHour: Int = 21
+): List<HourlyEffectivenessBucket> {
+    val totalMsgByHour = mutableMapOf<Int, Int>()
+    val okMsgByHour = mutableMapOf<Int, Int>()
+    val failMsgByHour = mutableMapOf<Int, Int>()
+    val totalCallByHour = mutableMapOf<Int, Int>()
+    val connectedCallByHour = mutableMapOf<Int, Int>()
+    val cal = Calendar.getInstance()
+
+    logs.forEach { log ->
+        if (log.timestamp <= 0L) return@forEach
+        cal.timeInMillis = log.timestamp
+        val h = cal.get(Calendar.HOUR_OF_DAY).coerceIn(startHour, endHour)
+        totalMsgByHour[h] = (totalMsgByHour[h] ?: 0) + 1
+        if (log.status == "SUCCESS") {
+            okMsgByHour[h] = (okMsgByHour[h] ?: 0) + 1
+        } else {
+            failMsgByHour[h] = (failMsgByHour[h] ?: 0) + 1
+        }
+    }
+
+    interactions.forEach { item ->
+        if (item.timestampMs <= 0L) return@forEach
+        cal.timeInMillis = item.timestampMs
+        val h = cal.get(Calendar.HOUR_OF_DAY).coerceIn(startHour, endHour)
+        when (item.channel) {
+            "MESSAGE" -> {
+                totalMsgByHour[h] = (totalMsgByHour[h] ?: 0) + 1
+                if (item.result == "SUCCESS" || item.result == "RESCHEDULED") {
+                    okMsgByHour[h] = (okMsgByHour[h] ?: 0) + 1
+                } else {
+                    failMsgByHour[h] = (failMsgByHour[h] ?: 0) + 1
+                }
+            }
+            "CALL" -> {
+                totalCallByHour[h] = (totalCallByHour[h] ?: 0) + 1
+                if (item.result == "SUCCESS" || item.result == "RESCHEDULED" || item.result == "REJECTED") {
+                    connectedCallByHour[h] = (connectedCallByHour[h] ?: 0) + 1
+                }
+            }
+        }
+    }
+
+    return (startHour..endHour).map { hour ->
+        HourlyEffectivenessBucket(
+            hour = hour,
+            totalMessages = totalMsgByHour[hour] ?: 0,
+            successMessages = okMsgByHour[hour] ?: 0,
+            failedMessages = failMsgByHour[hour] ?: 0,
+            totalCalls = totalCallByHour[hour] ?: 0,
+            connectedCalls = connectedCallByHour[hour] ?: 0
+        )
     }
 }
 

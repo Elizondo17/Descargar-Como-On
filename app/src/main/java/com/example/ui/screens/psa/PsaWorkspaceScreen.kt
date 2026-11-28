@@ -1,5 +1,6 @@
 package com.example.ui.screens.psa
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -7,6 +8,8 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -49,6 +52,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -115,6 +119,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AgendaTimeWindowFilter
 import com.example.data.model.AgendaVisitStatusFilter
+import com.example.data.model.BusinessInviteEntity
 import com.example.data.model.PsaHomeVisit
 import com.example.data.model.PsaMessageTone
 import com.example.data.model.PsaPostSaleInstallation
@@ -144,7 +149,11 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.MainViewModel
+import com.example.ui.components.ContactsPermissionRationaleDialog
+import com.example.ui.components.PhoneContactPickerDialog
 import com.example.util.AgendaSearchScope
+import com.example.util.DeviceContactsHelper
+import com.example.util.PhoneContactEntry
 import com.example.util.PsaAgendaSearchHelper
 import com.example.util.PsaCountryConfig
 import com.example.util.PsaCountryRegistry
@@ -165,7 +174,9 @@ enum class PsaWorkspaceTab(val label: String) {
     STOCK("📦 Stock"),
     SCRIPTS("💬 Guiones"),
     LIVE_DEMO("🔬 Demostración"),
-    AI_MEMORY("🧠 IA");
+    AI_MEMORY("🧠 IA"),
+    BUSINESS_INVITES("🤝 Invitar a Negocio"),
+    BUSINESS_PRESENTATION("🚀 Presentación");
 
     val isPrimaryTab: Boolean
         get() = this == LIVE_DEMO
@@ -210,6 +221,10 @@ fun PsaWorkspaceScreen(
     val pricingConfig by viewModel.psaPricingConfig.collectAsState()
     val activeCountry by viewModel.activePsaCountry.collectAsState()
     val pendingOfficialPvp by viewModel.pendingOfficialPvpConfirmation.collectAsState()
+    val businessInvites by viewModel.allBusinessInvites.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
+    val isHierarchyBusy by viewModel.isHierarchyActionBusy.collectAsState()
+    val hierarchyFeedback by viewModel.hierarchyActionFeedback.collectAsState()
 
     var activeTab by remember { mutableStateOf(PsaWorkspaceTab.LIVE_DEMO) }
     var lastPrimaryTab by remember { mutableStateOf(PsaWorkspaceTab.LIVE_DEMO) }
@@ -227,6 +242,7 @@ fun PsaWorkspaceScreen(
     var tapCartQuantities by remember { mutableStateOf(mapOf("senior4" to 1)) }
     var wellCartQuantities by remember { mutableStateOf(mapOf("rotech" to 1)) }
     var budgetHandoff by remember { mutableStateOf<DemoToBudgetHandoff?>(null) }
+    var activeInviteForPresentation by remember { mutableStateOf<BusinessInviteEntity?>(null) }
     var showNewVisitDialog by remember { mutableStateOf(false) }
     var showPricingDialog by remember { mutableStateOf(false) }
     var showPresentationMode by remember { mutableStateOf(false) }
@@ -526,7 +542,6 @@ fun PsaWorkspaceScreen(
                                     testPhotoPath = photoPath
                                 )
                             },
-                            onOpenAiAssistant = { showQuickPsaAiSheet = true },
                             onAiContextChanged = { snapshot -> viewModel.updatePsaAiDemoContext(snapshot) }
                         )
 
@@ -534,6 +549,53 @@ fun PsaWorkspaceScreen(
                             context = context,
                             viewModel = viewModel,
                             allKnowledge = allKnowledge
+                        )
+
+                        PsaWorkspaceTab.BUSINESS_INVITES -> PsaBusinessInvitesSection(
+                            context = context,
+                            invites = businessInvites,
+                            sellerDisplayName = currentUser?.username.orEmpty(),
+                            isHierarchyBusy = isHierarchyBusy,
+                            onSaveInvite = { invite -> viewModel.saveBusinessInvite(context, invite) },
+                            onDeleteInvite = { inviteId -> viewModel.deleteBusinessInvite(context, inviteId) },
+                            onStartPresentationForInvite = { invite ->
+                                activeInviteForPresentation = invite
+                                navigateToTab(PsaWorkspaceTab.BUSINESS_PRESENTATION)
+                            },
+                            onSubmitTeamRecruit = { invite, targetName, targetEmail, suggestedDays, notes ->
+                                viewModel.submitRecruitFromBusinessFlow(
+                                    inviteId = invite.id,
+                                    targetName = targetName,
+                                    targetEmail = targetEmail,
+                                    phone = invite.phone,
+                                    suggestedDays = suggestedDays,
+                                    notes = notes
+                                )
+                            }
+                        )
+
+                        PsaWorkspaceTab.BUSINESS_PRESENTATION -> PsaBusinessPresentationSection(
+                            pricingConfig = pricingConfig,
+                            activeCountry = activeCountry,
+                            activeInvite = activeInviteForPresentation,
+                            sellerDisplayName = currentUser?.username.orEmpty(),
+                            isHierarchyBusy = isHierarchyBusy,
+                            hierarchyFeedback = hierarchyFeedback,
+                            onClearInvite = { activeInviteForPresentation = null },
+                            onSaveInviteFollowUp = { updated ->
+                                activeInviteForPresentation = updated
+                                viewModel.saveBusinessInvite(context, updated)
+                            },
+                            onSubmitQuickRecruit = { inviteId, targetName, targetEmail, phone, suggestedDays, notes ->
+                                viewModel.submitRecruitFromBusinessFlow(
+                                    inviteId = inviteId,
+                                    targetName = targetName,
+                                    targetEmail = targetEmail,
+                                    phone = phone,
+                                    suggestedDays = suggestedDays,
+                                    notes = notes
+                                )
+                            }
                         )
                     }
                 }
@@ -2911,6 +2973,18 @@ private fun PsaNewVisitDialog(
         mutableStateOf(allPurifiers.firstOrNull()?.name ?: "PSA Senior 4 (Sobre Mesada)")
     }
     var notes by remember { mutableStateOf("") }
+    var showContactPicker by remember { mutableStateOf(false) }
+    var showPermissionRationale by remember { mutableStateOf(false) }
+
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showContactPicker = true
+        } else {
+            showPermissionRationale = true
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2932,13 +3006,46 @@ private fun PsaNewVisitDialog(
                 modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                item {
+                    OutlinedButton(
+                        onClick = {
+                            if (DeviceContactsHelper.hasReadContactsPermission(context)) {
+                                showContactPicker = true
+                            } else {
+                                contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, PsaCyanGlow.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("new_visit_import_contact_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Contacts,
+                            contentDescription = "Buscar en agenda del celular",
+                            tint = PsaCyanGlow,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Buscar en agenda del celular",
+                            color = PsaCyanGlow,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.5.sp
+                        )
+                    }
+                }
 
                 item {
                     OutlinedTextField(
                         value = customerName,
                         onValueChange = { customerName = it },
                         label = { Text("Nombre y Apellido", fontSize = 11.sp) },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("new_visit_customer_name_input"),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = PsaCyanGlow,
@@ -2954,7 +3061,9 @@ private fun PsaNewVisitDialog(
                         value = phone,
                         onValueChange = { phone = it },
                         label = { Text("Teléfono / WhatsApp", fontSize = 11.sp) },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("new_visit_phone_input"),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = PsaCyanGlow,
@@ -3313,6 +3422,27 @@ private fun PsaNewVisitDialog(
         },
         containerColor = SlateCard
     )
+
+    if (showContactPicker) {
+        PhoneContactPickerDialog(
+            onSelectContact = { selected ->
+                customerName = selected.name
+                phone = selected.phone
+                showContactPicker = false
+            },
+            onDismiss = { showContactPicker = false }
+        )
+    }
+
+    if (showPermissionRationale) {
+        ContactsPermissionRationaleDialog(
+            onRetryPermission = {
+                showPermissionRationale = false
+                contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+            },
+            onDismiss = { showPermissionRationale = false }
+        )
+    }
 }
 
 // -------------------------------------------------------------

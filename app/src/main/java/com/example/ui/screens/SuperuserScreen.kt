@@ -110,6 +110,7 @@ import com.example.data.model.BusinessProfile
 import com.example.data.model.RoleVisibilityConfig
 import com.example.data.model.TeamNotificationPriority
 import com.example.data.model.TeamNotificationTargetMode
+import com.example.data.model.TeamNotificationType
 import com.example.data.model.UserAccount
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material3.DropdownMenu
@@ -1650,6 +1651,7 @@ fun SuperuserScreen(
             item {
                 var isAnnounceExpanded by remember { mutableStateOf(false) }
                 var announceTargetMode by remember { mutableStateOf(TeamNotificationTargetMode.ALL) }
+                var announceCategory by remember { mutableStateOf(TeamNotificationType.SUPERUSER_GLOBAL) }
                 var announceTargetEmail by remember { mutableStateOf("") }
                 var announcePriority by remember { mutableStateOf(TeamNotificationPriority.IMPORTANT) }
                 var announceTitle by remember { mutableStateOf("") }
@@ -1689,13 +1691,13 @@ fun SuperuserScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
                                 Text(
-                                    text = "📢 Enviar Aviso / Banner al Equipo",
+                                    text = "📢 Enviar Aviso / Push FCM al Equipo",
                                     color = TextPrimary,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp
                                 )
                                 Text(
-                                    text = "Muestra banner en pantalla, campanita y notificación del teléfono",
+                                    text = "Envía push FCM, banner en pantalla y aviso en la campanita",
                                     color = TextSecondary,
                                     fontSize = 11.sp
                                 )
@@ -1737,6 +1739,32 @@ fun SuperuserScreen(
                                 )
                             }
 
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                FilterChip(
+                                    selected = announceCategory != TeamNotificationType.CATALOG_UPDATE,
+                                    onClick = { announceCategory = TeamNotificationType.SUPERUSER_GLOBAL },
+                                    label = { Text("📢 Aviso Personalizado", fontSize = 11.5.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = IndigoPrimary,
+                                        selectedLabelColor = Color.White
+                                    ),
+                                    modifier = Modifier.testTag("admin_announce_cat_personalized")
+                                )
+                                FilterChip(
+                                    selected = announceCategory == TeamNotificationType.CATALOG_UPDATE,
+                                    onClick = { announceCategory = TeamNotificationType.CATALOG_UPDATE },
+                                    label = { Text("💧 Catálogo / Precios", fontSize = 11.5.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = com.example.ui.theme.PsaCyanGlow,
+                                        selectedLabelColor = Color.Black
+                                    ),
+                                    modifier = Modifier.testTag("admin_announce_cat_catalog")
+                                )
+                            }
+
                             if (announceTargetMode == TeamNotificationTargetMode.USER) {
                                 Box(modifier = Modifier.fillMaxWidth()) {
                                     OutlinedButton(
@@ -1747,9 +1775,12 @@ fun SuperuserScreen(
                                         val selectedSeller = candidateSellers.firstOrNull {
                                             it.email.equals(announceTargetEmail, ignoreCase = true)
                                         }
+                                        val pushStatus = if (selectedSeller != null) {
+                                            if (selectedSeller.fcmToken.length >= 10) " • 📱 Push activo" else " • 🔕 Sin token"
+                                        } else ""
                                         Text(
                                             text = if (selectedSeller != null) {
-                                                "Para: ${selectedSeller.username} (${selectedSeller.email})"
+                                                "Para: ${selectedSeller.username}$pushStatus"
                                             } else {
                                                 "Seleccionar vendedor..."
                                             },
@@ -1763,13 +1794,21 @@ fun SuperuserScreen(
                                         modifier = Modifier.background(SlateCard)
                                     ) {
                                         candidateSellers.forEach { seller ->
+                                            val hasToken = seller.fcmToken.length >= 10
                                             DropdownMenuItem(
                                                 text = {
-                                                    Text(
-                                                        text = "${seller.username} (${seller.email})",
-                                                        color = TextPrimary,
-                                                        fontSize = 12.sp
-                                                    )
+                                                    Column {
+                                                        Text(
+                                                            text = "${seller.username} (${seller.email})",
+                                                            color = TextPrimary,
+                                                            fontSize = 12.sp
+                                                        )
+                                                        Text(
+                                                            text = if (hasToken) "📱 Push FCM activo" else "🔕 Sin token push aún",
+                                                            color = if (hasToken) EmeraldSuccess else TextMuted,
+                                                            fontSize = 10.5.sp
+                                                        )
+                                                    }
                                                 },
                                                 onClick = {
                                                     announceTargetEmail = seller.email
@@ -1807,7 +1846,16 @@ fun SuperuserScreen(
                                 value = announceTitle,
                                 onValueChange = { announceTitle = it },
                                 label = { Text("Título del aviso", fontSize = 12.sp) },
-                                placeholder = { Text("Ej: Meta semanal o Aviso importante", fontSize = 11.5.sp) },
+                                placeholder = {
+                                    Text(
+                                        text = if (announceCategory == TeamNotificationType.CATALOG_UPDATE) {
+                                            "Ej: Nueva Lista PSA o Promo Cuotas"
+                                        } else {
+                                            "Ej: Meta semanal o Aviso importante"
+                                        },
+                                        fontSize = 11.5.sp
+                                    )
+                                },
                                 singleLine = true,
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = com.example.ui.theme.PsaCyanGlow,
@@ -1824,7 +1872,7 @@ fun SuperuserScreen(
                                 value = announceBody,
                                 onValueChange = { announceBody = it },
                                 label = { Text("Mensaje", fontSize = 12.sp) },
-                                placeholder = { Text("Escribe el aviso que verán como banner y notificación...", fontSize = 11.5.sp) },
+                                placeholder = { Text("Escribe el aviso que verán como banner y notificación push...", fontSize = 11.5.sp) },
                                 maxLines = 4,
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = com.example.ui.theme.PsaCyanGlow,
@@ -1843,12 +1891,20 @@ fun SuperuserScreen(
                                         Toast.makeText(context, "Selecciona un vendedor destinatario.", Toast.LENGTH_SHORT).show()
                                         return@Button
                                     }
+                                    val resolvedCategory = if (announceCategory == TeamNotificationType.CATALOG_UPDATE) {
+                                        TeamNotificationType.CATALOG_UPDATE
+                                    } else if (announceTargetMode == TeamNotificationTargetMode.ALL) {
+                                        TeamNotificationType.SUPERUSER_GLOBAL
+                                    } else {
+                                        TeamNotificationType.SUPERUSER_DIRECT
+                                    }
                                     viewModel.sendSuperuserNotification(
                                         targetMode = announceTargetMode,
                                         targetEmail = announceTargetEmail,
                                         priority = announcePriority,
                                         title = announceTitle,
-                                        body = announceBody
+                                        body = announceBody,
+                                        notifCategory = resolvedCategory
                                     )
                                     announceTitle = ""
                                     announceBody = ""
@@ -1864,9 +1920,9 @@ fun SuperuserScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
                                     text = if (announceTargetMode == TeamNotificationTargetMode.ALL) {
-                                        "Enviar Aviso Global"
+                                        "Enviar Aviso Global (Banner + FCM)"
                                     } else {
-                                        "Enviar Aviso Individual"
+                                        "Enviar Aviso Personalizado (FCM)"
                                     },
                                     color = Color.Black,
                                     fontWeight = FontWeight.Bold,

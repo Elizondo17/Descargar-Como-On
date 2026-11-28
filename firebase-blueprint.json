@@ -113,6 +113,22 @@
           "type": "boolean",
           "description": "Whether the seller has completed or dismissed the one-time interactive welcome tutorial"
         },
+        "fcmToken": {
+          "type": "string",
+          "description": "Latest Firebase Cloud Messaging registration token for personalized push delivery"
+        },
+        "fcmUpdatedAtMs": {
+          "type": "integer",
+          "description": "Epoch milliseconds when the device FCM token was last refreshed"
+        },
+        "notifyCatalogUpdates": {
+          "type": "boolean",
+          "description": "Seller toggle for catalog and pricing update push notifications"
+        },
+        "notifyAssignedContacts": {
+          "type": "boolean",
+          "description": "Seller toggle for assigned contact push notifications"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -473,7 +489,7 @@
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "type": { "type": "string", "enum": ["APP_UPDATE", "SUPERUSER_GLOBAL", "SUPERUSER_DIRECT", "LEADER_COACHING"] },
+        "type": { "type": "string", "enum": ["APP_UPDATE", "SUPERUSER_GLOBAL", "SUPERUSER_DIRECT", "LEADER_COACHING", "CATALOG_UPDATE", "ASSIGNED_CONTACT"] },
         "priority": { "type": "string", "enum": ["INFO", "IMPORTANT", "URGENT"] },
         "targetMode": { "type": "string", "enum": ["ALL", "USER"] },
         "targetEmail": { "type": "string" },
@@ -554,6 +570,69 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "BusinessInviteRecord": {
+      "title": "BusinessInviteRecord",
+      "description": "Seller-isolated prospect invited to a Business Presentation, including schedule, reminder, WhatsApp follow-up, and team onboarding link.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "sellerEmail": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "notes": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["INVITED", "CONFIRMED", "ATTENDED", "JOINED_TEAM", "NOT_INTERESTED"]
+        },
+        "presentationDate": { "type": "string" },
+        "presentationTime": { "type": "string" },
+        "reminderEnabled": { "type": "boolean" },
+        "reminderAtMs": { "type": "integer" },
+        "whatsappSentCount": { "type": "integer" },
+        "linkedRequestId": { "type": "string" },
+        "createdAtMs": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "ownerUid", "sellerEmail", "name", "phone", "email", "notes", "status",
+        "presentationDate", "presentationTime", "reminderEnabled", "reminderAtMs",
+        "whatsappSentCount", "linkedRequestId", "createdAtMs", "updatedAt"
+      ]
+    },
+    "FcmDispatchQueueItem": {
+      "title": "FcmDispatchQueueItem",
+      "description": "Push notification dispatch request queued for Firebase Cloud Functions / FCM delivery.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "category": {
+          "type": "string",
+          "enum": ["CATALOG_UPDATE", "ASSIGNED_CONTACT", "SUPERUSER_GLOBAL", "SUPERUSER_DIRECT", "LEADER_COACHING", "APP_UPDATE"]
+        },
+        "targetMode": { "type": "string", "enum": ["TOPIC", "TOKEN"] },
+        "targetTopic": { "type": "string" },
+        "targetToken": { "type": "string" },
+        "targetEmail": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "priority": { "type": "string", "enum": ["INFO", "IMPORTANT", "URGENT"] },
+        "actionUrl": { "type": "string" },
+        "senderEmail": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "status": { "type": "string", "enum": ["QUEUED", "SENT", "FAILED"] },
+        "createdAtMs": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "category", "targetMode", "targetTopic", "targetToken", "targetEmail",
+        "title", "body", "priority", "senderEmail", "senderName", "senderUid",
+        "status", "createdAtMs", "createdAt", "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -581,6 +660,10 @@
       "schema": { "$ref": "#/entities/PsaPostSaleRecord" },
       "description": "Private after-sales installations and filter replacement schedules owned by each seller UID"
     },
+    "/seller_workspaces/{ownerUid}/business_invites/{inviteId}": {
+      "schema": { "$ref": "#/entities/BusinessInviteRecord" },
+      "description": "Private Business Presentation invites and recruitment follow-ups owned by each seller UID"
+    },
     "/seller_stats/{ownerUid}": {
       "schema": { "$ref": "#/entities/SellerStats" },
       "description": "Aggregated messaging, calls, recent activity, and KPIs per seller readable by owner, bootstrap admin, and authorized ancestors"
@@ -600,6 +683,10 @@
     "/mensajes_globales/{mensajeId}": {
       "schema": { "$ref": "#/entities/MensajeGlobal" },
       "description": "Global Superuser announcements rendered at the top of the main UI in BannerAviso"
+    },
+    "/fcm_dispatch_queue/{dispatchId}": {
+      "schema": { "$ref": "#/entities/FcmDispatchQueueItem" },
+      "description": "FCM push dispatch queue consumed by Cloud Functions for topic and per-token push delivery"
     }
   }
 }

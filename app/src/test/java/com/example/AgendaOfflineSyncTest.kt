@@ -7,6 +7,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.AppDatabase
 import com.example.data.model.AgendaSyncEntityType
 import com.example.data.model.AgendaSyncOperation
+import com.example.data.model.BusinessInviteEntity
+import com.example.data.model.BusinessInviteStatus
 import com.example.data.model.PsaContactLead
 import com.example.data.model.PsaHomeVisit
 import com.example.data.model.PsaLeadStatus
@@ -41,6 +43,7 @@ class AgendaOfflineSyncTest {
         val remoteVisits = linkedMapOf<String, PsaHomeVisit>()
         val remotePostSale = linkedMapOf<String, PsaPostSaleInstallation>()
         val remoteContacts = linkedMapOf<String, PsaContactLead>()
+        val remoteBusinessInvites = linkedMapOf<String, BusinessInviteEntity>()
         val failVisitIds = mutableSetOf<String>()
         val operationLog = mutableListOf<String>()
 
@@ -85,6 +88,18 @@ class AgendaOfflineSyncTest {
         override suspend fun deleteContact(ownerUid: String, contactId: String): Result<Unit> {
             operationLog += "DELETE_CONTACT:$contactId"
             remoteContacts.remove(contactId)
+            return Result.success(Unit)
+        }
+
+        override suspend fun upsertBusinessInvite(ownerUid: String, invite: BusinessInviteEntity): Result<Unit> {
+            operationLog += "UPSERT_BUSINESS_INVITE:${invite.id}"
+            remoteBusinessInvites[invite.id] = invite.copy(ownerUid = ownerUid)
+            return Result.success(Unit)
+        }
+
+        override suspend fun deleteBusinessInvite(ownerUid: String, inviteId: String): Result<Unit> {
+            operationLog += "DELETE_BUSINESS_INVITE:$inviteId"
+            remoteBusinessInvites.remove(inviteId)
             return Result.success(Unit)
         }
     }
@@ -325,6 +340,7 @@ class AgendaOfflineSyncTest {
             sqlite.execSQL("DROP TABLE IF EXISTS `pending_agenda_sync`")
             sqlite.execSQL("DROP TABLE IF EXISTS `psa_call_reminders`")
             sqlite.execSQL("DROP TABLE IF EXISTS `read_notification_ids`")
+            sqlite.execSQL("DROP TABLE IF EXISTS `business_invites`")
             sqlite.execSQL(
                 """
                 INSERT INTO `psa_home_visits` (
@@ -347,7 +363,13 @@ class AgendaOfflineSyncTest {
         }
 
         val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_15_16, AppDatabase.MIGRATION_16_17, AppDatabase.MIGRATION_17_18)
+            .addMigrations(
+                AppDatabase.MIGRATION_15_16,
+                AppDatabase.MIGRATION_16_17,
+                AppDatabase.MIGRATION_17_18,
+                AppDatabase.MIGRATION_18_19,
+                AppDatabase.MIGRATION_19_20
+            )
             .allowMainThreadQueries()
             .build()
         try {
@@ -357,12 +379,49 @@ class AgendaOfflineSyncTest {
                 assertEquals("legacy-v15-visit", visits.first().id)
                 assertEquals("Elena V15", visits.first().customerName)
 
-                // New pending_agenda_sync table exists and is usable immediately
+                // New pending_agenda_sync & business_invites tables exist and are usable immediately
                 assertTrue(migratedDb.agendaSyncDao().getAllPendingOpsOnce().isEmpty())
+                assertTrue(migratedDb.businessInviteDao().getAllInvitesOnce().isEmpty())
             }
         } finally {
             migratedDb.close()
             context.deleteDatabase(dbName)
         }
+    }
+
+    @Test
+    fun `offline business invite writes persist locally and sync cleanly when online`() = runBlocking {
+        var online = false
+        val gateway = FakeAgendaCloudGateway(uid = "seller-uid-1")
+        val repo = EzoRepository(
+            database = db,
+            context = context,
+            cloudGatewayOverride = gateway,
+            networkOnlineProvider = { online }
+        )
+
+        val invite = BusinessInviteEntity(
+            id = "biz-inv-1",
+            name = "Marcos Silva",
+            phone = "+5491166554433",
+            email = "marcos@gmail.com",
+            status = BusinessInviteStatus.INVITED.name,
+            presentationDate = "2026-11-28",
+            presentationTime = "19:30",
+            reminderEnabled = true,
+            reminderAtMs = 1_800_000_000_000L
+        )
+        repo.saveBusinessInvite(invite)
+
+        assertEquals(1, db.businessInviteDao().getAllInvitesOnce().size)
+        assertEquals(1, db.agendaSyncDao().getAllPendingOpsOnce().size)
+        assertTrue(gateway.remoteBusinessInvites.isEmpty())
+
+        online = true
+        val syncResult = repo.syncPendingAgendaWithFirestore(explicitUid = "seller-uid-1", publishStats = false)
+        assertTrue(syncResult.isSuccess)
+        assertEquals(1, syncResult.getOrThrow())
+        assertEquals(0, db.agendaSyncDao().getAllPendingOpsOnce().size)
+        assertEquals("Marcos Silva", gateway.remoteBusinessInvites["biz-inv-1"]?.name)
     }
 }

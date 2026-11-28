@@ -941,6 +941,8 @@ class PsaDemoAndCloudTest {
         assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.CONTACTS.isPrimaryTab)
         assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.SCRIPTS.isPrimaryTab)
         assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.AI_MEMORY.isPrimaryTab)
+        assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.BUSINESS_INVITES.isPrimaryTab)
+        assertFalse(com.example.ui.screens.psa.PsaWorkspaceTab.BUSINESS_PRESENTATION.isPrimaryTab)
     }
 
     @Test

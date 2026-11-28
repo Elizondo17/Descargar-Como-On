@@ -39,10 +39,12 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WaterDrop
@@ -220,6 +222,33 @@ fun PsaToolsDrawerSheet(
                 accentColor = IndigoPrimary,
                 testTag = "psa_drawer_item_contacts",
                 onClick = { onSelectTab(PsaWorkspaceTab.CONTACTS) }
+            )
+
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 6.dp),
+                color = SlateCardBorder.copy(alpha = 0.65f)
+            )
+
+            DrawerSectionLabel(title = "CRECIMIENTO Y EQUIPO")
+
+            PsaDrawerItemRow(
+                label = "Invitar a Negocio",
+                subtitle = "Lista, WhatsApp y recordatorios",
+                icon = Icons.Default.GroupAdd,
+                selected = activeTab == PsaWorkspaceTab.BUSINESS_INVITES,
+                accentColor = EmeraldSuccess,
+                testTag = "psa_drawer_item_business_invites",
+                onClick = { onSelectTab(PsaWorkspaceTab.BUSINESS_INVITES) }
+            )
+
+            PsaDrawerItemRow(
+                label = "Presentación Negocio",
+                subtitle = "Diapositivas, Carrera PSA y Plan Semanal",
+                icon = Icons.Default.RocketLaunch,
+                selected = activeTab == PsaWorkspaceTab.BUSINESS_PRESENTATION,
+                accentColor = PsaCyanGlow,
+                testTag = "psa_drawer_item_business_presentation",
+                onClick = { onSelectTab(PsaWorkspaceTab.BUSINESS_PRESENTATION) }
             )
 
             HorizontalDivider(

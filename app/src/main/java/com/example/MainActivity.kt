@@ -152,19 +152,27 @@ enum class AppTab {
 }
 
 class MainActivity : ComponentActivity() {
-            override fun onCreate(savedInstanceState: Bundle?) {
+    private val pendingLaunchIntent = mutableStateOf<Intent?>(null)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         runCatching { com.google.firebase.FirebaseApp.initializeApp(this) }
         enableEdgeToEdge()
+        pendingLaunchIntent.value = intent
         runCatching {
             com.example.util.CriticalNotificationHelper.ensureNotificationChannel(this)
-            com.example.service.EzoFirebaseMessagingService.subscribeToCriticalAlertsTopic()
+            com.example.service.EzoFirebaseMessagingService.subscribeToCriticalAlertsTopic(this)
         }
         setContent {
             val viewModel: MainViewModel = viewModel()
             val fontScaleLevel by viewModel.fontScaleLevel.collectAsState()
+            val launchIntent by pendingLaunchIntent
             MyApplicationTheme(fontScaleLevel = fontScaleLevel) {
-                MainApp(viewModel = viewModel)
+                MainApp(
+                    viewModel = viewModel,
+                    launchIntent = launchIntent,
+                    onConsumeLaunchIntent = { pendingLaunchIntent.value = null }
+                )
             }
         }
     }
@@ -172,12 +180,17 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        pendingLaunchIntent.value = intent
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun MainApp(viewModel: MainViewModel = viewModel()) {
+fun MainApp(
+    viewModel: MainViewModel = viewModel(),
+    launchIntent: Intent? = null,
+    onConsumeLaunchIntent: () -> Unit = {}
+) {
     val currentUser by viewModel.currentUser.collectAsState()
     val fontScaleLevel by viewModel.fontScaleLevel.collectAsState()
     val hasSeenSetupGuide by viewModel.hasSeenSetupGuide.collectAsState()
@@ -201,6 +214,7 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
     val readNotificationIds by viewModel.readNotificationIds.collectAsState()
     val unreadNotificationsCount by viewModel.unreadNotificationsCount.collectAsState()
     val activePriorityBanner by viewModel.activePriorityBanner.collectAsState()
+    val fcmChannelSettings by viewModel.fcmChannelSettings.collectAsState()
     val mensajesGlobales by viewModel.mensajesGlobales.collectAsState()
     val dismissedGlobalBannerIds by viewModel.dismissedGlobalBannerIds.collectAsState()
     val teamNotificationFeedback by viewModel.teamNotificationFeedback.collectAsState()
@@ -226,6 +240,23 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
         hierarchyInspectEmail = null
         if (logged != null) {
             currentTab = AppTab.PSA_WORKSPACE
+        }
+    }
+
+    LaunchedEffect(launchIntent, activeUserKey) {
+        if (launchIntent != null && currentUser != null) {
+            val openedFromFcm = viewModel.consumeFcmTapIntent(launchIntent)
+            if (openedFromFcm) {
+                showHierarchyScreen = false
+                hierarchyInspectEmail = null
+                showNotificationsSheet = false
+                showSettingsAndHelpDialog = false
+                showWelcomeTutorialManual = false
+                showExpiringRenewDialog = false
+                pendingPsaTargetTab = com.example.ui.screens.psa.PsaWorkspaceTab.LIVE_DEMO
+                currentTab = AppTab.PSA_WORKSPACE
+            }
+            onConsumeLaunchIntent()
         }
     }
 
@@ -686,6 +717,8 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                 val accentColor = when {
                     priorityBanner.parsedPriority == TeamNotificationPriority.URGENT -> RoseError
                     priorityBanner.parsedType == TeamNotificationType.APP_UPDATE -> com.example.ui.theme.PsaCyanGlow
+                    priorityBanner.parsedType == TeamNotificationType.CATALOG_UPDATE -> com.example.ui.theme.PsaCyanGlow
+                    priorityBanner.parsedType == TeamNotificationType.ASSIGNED_CONTACT -> EmeraldSuccess
                     priorityBanner.parsedType == TeamNotificationType.LEADER_COACHING -> EmeraldSuccess
                     priorityBanner.parsedPriority == TeamNotificationPriority.IMPORTANT -> AmberDelay
                     else -> IndigoPrimary
@@ -695,6 +728,8 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
                     TeamNotificationType.SUPERUSER_GLOBAL -> "📢"
                     TeamNotificationType.SUPERUSER_DIRECT -> "📩"
                     TeamNotificationType.LEADER_COACHING -> "💬"
+                    TeamNotificationType.CATALOG_UPDATE -> "💧"
+                    TeamNotificationType.ASSIGNED_CONTACT -> "👤"
                 }
                 val bannerActionUrl = priorityBanner.actionUrl.ifBlank { resolvedApkDownloadUrl }
                 Surface(
@@ -1041,11 +1076,19 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
             activeCountry = activePsaCountry,
             hasDismissedSetupGuide = hasSeenSetupGuide,
             isAppDistributionSignedIn = isAppDistributionSignedIn,
+            notifyCatalogUpdates = fcmChannelSettings.notifyCatalogUpdates,
+            notifyAssignedContacts = fcmChannelSettings.notifyAssignedContacts,
             onSelectFontLevel = { level ->
                 viewModel.setFontScaleLevel(level)
             },
             onSelectCountry = { code ->
                 viewModel.switchPsaCountry(context, code)
+            },
+            onToggleCatalogNotifications = { enabled ->
+                viewModel.setCatalogNotificationsEnabled(enabled)
+            },
+            onToggleAssignedContactsNotifications = { enabled ->
+                viewModel.setAssignedContactsNotificationsEnabled(enabled)
             },
             onShowSetupGuideAgain = {
                 viewModel.setSetupGuideDismissed(false)
@@ -1542,6 +1585,8 @@ fun TeamNotificationsBottomSheet(
                         val accent = when {
                             notif.parsedPriority == TeamNotificationPriority.URGENT -> RoseError
                             notif.parsedType == TeamNotificationType.APP_UPDATE -> com.example.ui.theme.PsaCyanGlow
+                            notif.parsedType == TeamNotificationType.CATALOG_UPDATE -> com.example.ui.theme.PsaCyanGlow
+                            notif.parsedType == TeamNotificationType.ASSIGNED_CONTACT -> EmeraldSuccess
                             notif.parsedType == TeamNotificationType.LEADER_COACHING -> EmeraldSuccess
                             notif.parsedPriority == TeamNotificationPriority.IMPORTANT -> AmberDelay
                             else -> IndigoPrimary

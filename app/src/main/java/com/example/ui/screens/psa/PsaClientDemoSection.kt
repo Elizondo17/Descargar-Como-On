@@ -37,7 +37,6 @@ import androidx.compose.material.icons.filled.Kitchen
 import androidx.compose.material.icons.filled.LocalCafe
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.ChildCare
-import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Shower
@@ -452,9 +451,6 @@ fun PsaClientDemoSection(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                if (onOpenAiAssistant != null) {
-                                    DemoAiQuickButton(onClick = onOpenAiAssistant, fullWidth = true)
-                                }
                                 DemoHeaderActionButton(
                                     isFullscreenPresentation = isFullscreenPresentation,
                                     onOpenFullscreen = onOpenFullscreen,
@@ -476,9 +472,6 @@ fun PsaClientDemoSection(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                if (!isFullscreenPresentation && onOpenAiAssistant != null) {
-                                    DemoAiQuickButton(onClick = onOpenAiAssistant, fullWidth = false)
-                                }
                                 DemoHeaderActionButton(
                                     isFullscreenPresentation = isFullscreenPresentation,
                                     onOpenFullscreen = onOpenFullscreen,
@@ -1529,27 +1522,6 @@ private fun DemoHeaderActionButton(
             Spacer(modifier = Modifier.width(6.dp))
             Text("Modo Presentación", color = Color.Black, fontWeight = FontWeight.Bold)
         }
-    }
-}
-
-@Composable
-private fun DemoAiQuickButton(
-    onClick: () -> Unit,
-    fullWidth: Boolean
-) {
-    OutlinedButton(
-        onClick = onClick,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, PsaCyanGlow.copy(alpha = 0.7f)),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-        modifier = Modifier
-            .then(if (fullWidth) Modifier.fillMaxWidth() else Modifier)
-            .heightIn(min = 48.dp)
-            .testTag("demo_open_psa_ai_btn")
-    ) {
-        Icon(Icons.Default.Psychology, contentDescription = "Asistente IA PSA", tint = PsaCyanGlow, modifier = Modifier.size(18.dp))
-        Spacer(modifier = Modifier.width(6.dp))
-        Text("IA PSA", color = PsaCyanGlow, fontWeight = FontWeight.Bold)
     }
 }
 

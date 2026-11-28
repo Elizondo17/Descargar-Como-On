@@ -269,7 +269,7 @@ object AppErrorLogger {
         auth: FirebaseAuth,
         reporterNameOverride: String = ""
     ): Int {
-        val fbUser = auth.currentUser ?: return 0
+        val fbUser = runCatching { auth.currentUser }.getOrNull() ?: return 0
         val uid = fbUser.uid.trim()
         if (uid.isBlank()) return 0
 

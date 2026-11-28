@@ -831,11 +831,23 @@ test("Hierarchy rules: authorized manager submits PENDING requests, superuser ac
     updatedAt: pastDate(500),
   };
 
-  // Peer WITHOUT canManageSubUsers cannot submit hierarchy requests
+  // Peer WITHOUT canManageSubUsers cannot submit LINK_EXISTING_USER requests, but CAN propose a PENDING NEW_SUB_USER recruit for their own team
   await assertFails(
-    peerDb.collection("hierarchy_requests").doc("req_peer").set({
+    peerDb.collection("hierarchy_requests").doc("req_peer_link").set({
       ...reqDoc,
-      id: "req_peer",
+      id: "req_peer_link",
+      requestType: "LINK_EXISTING_USER",
+      requestedParentEmail: peerEmail,
+      requestedByUid: "uid-peer-1",
+      requestedByEmail: peerEmail,
+    })
+  );
+  await assertSucceeds(
+    peerDb.collection("hierarchy_requests").doc("req_peer_recruit").set({
+      ...reqDoc,
+      id: "req_peer_recruit",
+      requestType: "NEW_SUB_USER",
+      targetEmail: "invitado.negocio@gmail.com",
       requestedParentEmail: peerEmail,
       requestedByUid: "uid-peer-1",
       requestedByEmail: peerEmail,
@@ -1445,3 +1457,250 @@ test("authorized_users tutorialCompleted flag and mensajes_globales BannerAviso 
     adminDb.collection("mensajes_globales").doc("msg_global_inactivo").delete()
   );
 });
+
+test("Seller-isolated business_invites validates status and prevents cross-user access", async () => {
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const seller1Db = testEnv
+    .authenticatedContext("uid-bi-1", {
+      email: "vendedor.bi1@gmail.com",
+      email_verified: true,
+    })
+    .firestore();
+  const seller2Db = testEnv
+    .authenticatedContext("uid-bi-2", {
+      email: "vendedor.bi2@gmail.com",
+      email_verified: true,
+    })
+    .firestore();
+
+  const inviteDoc = {
+    id: "inv_1",
+    ownerUid: "uid-bi-1",
+    sellerEmail: "vendedor.bi1@gmail.com",
+    name: "Lucia Gomez",
+    phone: "+5491155551234",
+    email: "lucia.gomez@gmail.com",
+    notes: "Interesada en emprender medio tiempo",
+    status: "CONFIRMED",
+    presentationDate: "2026-11-30",
+    presentationTime: "19:30",
+    reminderEnabled: true,
+    reminderAtMs: Date.now() + 86400000,
+    whatsappSentCount: 1,
+    linkedRequestId: "",
+    createdAtMs: Date.now() - 1000,
+    updatedAt: pastDate(50),
+  };
+
+  // Unauthenticated and cross-seller denied
+  await assertFails(
+    unauthDb
+      .collection("seller_workspaces")
+      .doc("uid-bi-1")
+      .collection("business_invites")
+      .doc("inv_1")
+      .set(inviteDoc)
+  );
+  await assertFails(
+    seller2Db
+      .collection("seller_workspaces")
+      .doc("uid-bi-1")
+      .collection("business_invites")
+      .doc("inv_1")
+      .set(inviteDoc)
+  );
+
+  // Invalid status rejected
+  await assertFails(
+    seller1Db
+      .collection("seller_workspaces")
+      .doc("uid-bi-1")
+      .collection("business_invites")
+      .doc("inv_bad")
+      .set({ ...inviteDoc, id: "inv_bad", status: "HACKED" })
+  );
+
+  // Owner creates, reads, updates, and deletes
+  const ref = seller1Db
+    .collection("seller_workspaces")
+    .doc("uid-bi-1")
+    .collection("business_invites")
+    .doc("inv_1");
+  await assertSucceeds(ref.set(inviteDoc));
+  await assertSucceeds(ref.get());
+  await assertFails(
+    seller2Db
+      .collection("seller_workspaces")
+      .doc("uid-bi-1")
+      .collection("business_invites")
+      .doc("inv_1")
+      .get()
+  );
+  await assertSucceeds(
+    ref.update({
+      ...inviteDoc,
+      status: "JOINED_TEAM",
+      linkedRequestId: "req_12345",
+      updatedAt: pastDate(10),
+    })
+  );
+  await assertSucceeds(ref.delete());
+});
+
+test("FCM settings self-update, CATALOG_UPDATE notifications, and fcm_dispatch_queue ACLs enforce zero-trust rules", async () => {
+  const sellerEmail = "fcmseller@gmail.com";
+  const otherEmail = "fcmother@gmail.com";
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("authorized_users").doc(sellerEmail).set(
+      buildUserDoc({
+        id: "fcm_u1",
+        email: sellerEmail,
+        username: "Vendedor FCM",
+        ownerUid: "uid-fcm-1",
+        boundDeviceIds: ["dev-fcm-1"],
+        boundDeviceLabels: ["Pixel 8"],
+      })
+    );
+    await db.collection("authorized_users").doc(otherEmail).set(
+      buildUserDoc({
+        id: "fcm_u2",
+        email: otherEmail,
+        username: "Otro FCM",
+        ownerUid: "uid-fcm-2",
+        boundDeviceIds: ["dev-fcm-2"],
+        boundDeviceLabels: ["Galaxy S24"],
+      })
+    );
+  });
+
+  const adminDb = testEnv
+    .authenticatedContext("uid-admin", { email: ADMIN_EMAIL, email_verified: true })
+    .firestore();
+  const sellerDb = testEnv
+    .authenticatedContext("uid-fcm-1", { email: sellerEmail, email_verified: true })
+    .firestore();
+  const otherDb = testEnv
+    .authenticatedContext("uid-fcm-2", { email: otherEmail, email_verified: true })
+    .firestore();
+
+  // Seller updates own FCM token and channel preferences
+  await assertSucceeds(
+    sellerDb.collection("authorized_users").doc(sellerEmail).update({
+      fcmToken: "token_abc_1234567890_device",
+      fcmUpdatedAtMs: Date.now() - 1000,
+      notifyCatalogUpdates: true,
+      notifyAssignedContacts: false,
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Seller cannot modify another seller's FCM settings or escalate role
+  await assertFails(
+    otherDb.collection("authorized_users").doc(sellerEmail).update({
+      fcmToken: "hijacked_token_123456",
+      fcmUpdatedAtMs: Date.now(),
+      notifyCatalogUpdates: false,
+      notifyAssignedContacts: false,
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertFails(
+    sellerDb.collection("authorized_users").doc(sellerEmail).update({
+      fcmToken: "token_abc_1234567890_device",
+      role: "SUPERUSER",
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Superuser can publish CATALOG_UPDATE notification
+  await assertSucceeds(
+    adminDb.collection("team_notifications").doc("ntf_catalog_1").set({
+      id: "ntf_catalog_1",
+      type: "CATALOG_UPDATE",
+      priority: "IMPORTANT",
+      targetMode: "ALL",
+      targetEmail: "",
+      senderEmail: ADMIN_EMAIL,
+      senderName: "Administrador",
+      senderUid: "uid-admin",
+      title: "Catálogo PSA AR Actualizado",
+      body: "Se actualizaron los precios de Senior 4 y planes en cuotas.",
+      actionUrl: "",
+      requiredVersionCode: 0,
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+    })
+  );
+
+  // Superuser can enqueue topic and targeted token FCM dispatches
+  await assertSucceeds(
+    adminDb.collection("fcm_dispatch_queue").doc("fcm_q_topic_1").set({
+      id: "fcm_q_topic_1",
+      category: "CATALOG_UPDATE",
+      targetMode: "TOPIC",
+      targetTopic: "psa_catalog_updates",
+      targetToken: "",
+      targetEmail: "",
+      title: "Catálogo AR Actualizado",
+      body: "Nueva lista oficial publicada.",
+      priority: "IMPORTANT",
+      actionUrl: "",
+      senderEmail: ADMIN_EMAIL,
+      senderName: "Administrador",
+      senderUid: "uid-admin",
+      status: "QUEUED",
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("fcm_dispatch_queue").doc("fcm_q_token_1").set({
+      id: "fcm_q_token_1",
+      category: "SUPERUSER_DIRECT",
+      targetMode: "TOKEN",
+      targetTopic: "",
+      targetToken: "token_abc_1234567890_device",
+      targetEmail: sellerEmail,
+      title: "Aviso Directo",
+      body: "Revisa el nuevo plan Senior 4.",
+      priority: "URGENT",
+      actionUrl: "",
+      senderEmail: ADMIN_EMAIL,
+      senderName: "Administrador",
+      senderUid: "uid-admin",
+      status: "QUEUED",
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Regular seller cannot forge FCM dispatches or read other seller's targeted token dispatch
+  await assertFails(
+    sellerDb.collection("fcm_dispatch_queue").doc("fcm_q_spoof").set({
+      id: "fcm_q_spoof",
+      category: "CATALOG_UPDATE",
+      targetMode: "TOPIC",
+      targetTopic: "psa_catalog_updates",
+      targetToken: "",
+      targetEmail: "",
+      title: "Fake",
+      body: "Fake",
+      priority: "INFO",
+      actionUrl: "",
+      senderEmail: sellerEmail,
+      senderName: "Vendedor FCM",
+      senderUid: "uid-fcm-1",
+      status: "QUEUED",
+      createdAtMs: Date.now() - 1000,
+      createdAt: pastDate(50),
+      updatedAt: pastDate(50),
+    })
+  );
+  await assertFails(otherDb.collection("fcm_dispatch_queue").doc("fcm_q_token_1").get());
+  await assertSucceeds(sellerDb.collection("fcm_dispatch_queue").doc("fcm_q_token_1").get());
+});
+

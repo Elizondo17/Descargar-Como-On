@@ -37,8 +37,17 @@ object CriticalNotificationHelper {
     fun showNotification(context: Context, alert: CriticalCrmAlert) {
         ensureNotificationChannel(context)
 
+        val systemNotificationId = alert.id.hashCode()
         val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            action = FcmNotificationPreferences.ACTION_OPEN_MAIN_BANNER
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(FcmNotificationPreferences.EXTRA_OPEN_FROM_FCM_BANNER, true)
+            putExtra(FcmNotificationPreferences.EXTRA_OPEN_MAIN_SCREEN, true)
+            putExtra(FcmNotificationPreferences.EXTRA_FCM_SYSTEM_NOTIFICATION_ID, systemNotificationId)
+            putExtra(FcmNotificationPreferences.EXTRA_FCM_NOTIF_ID, alert.id)
+            putExtra(FcmNotificationPreferences.EXTRA_FCM_TITLE, alert.title)
+            putExtra(FcmNotificationPreferences.EXTRA_FCM_BODY, alert.body)
+            putExtra(FcmNotificationPreferences.EXTRA_FCM_SENDER, alert.senderAdmin)
             putExtra("EXTRA_ALERT_ID", alert.id)
             putExtra("EXTRA_ALERT_TITLE", alert.title)
             putExtra("EXTRA_ALERT_BODY", alert.body)
@@ -48,7 +57,7 @@ object CriticalNotificationHelper {
 
         val pendingIntent = PendingIntent.getActivity(
             context,
-            alert.id.hashCode(),
+            systemNotificationId,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -68,7 +77,9 @@ object CriticalNotificationHelper {
             .setStyle(NotificationCompat.BigTextStyle().bigText("${alert.body}\n\nEmitido por: ${alert.senderAdmin}"))
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(true)
+            .setAutoCancel(false)
             .setContentIntent(pendingIntent)
             .setVibrate(longArrayOf(0, 300, 200, 300))
             .setDefaults(NotificationCompat.DEFAULT_ALL)

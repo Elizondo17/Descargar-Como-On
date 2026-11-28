@@ -179,11 +179,18 @@ class BannerAvisoAndTutorialProfileTest {
                 )
                 """.trimIndent()
             )
+            sqlite.execSQL("DROP TABLE IF EXISTS `business_invites`")
             sqlite.execSQL("PRAGMA user_version = 17")
         }
 
         val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_15_16, AppDatabase.MIGRATION_16_17, AppDatabase.MIGRATION_17_18)
+            .addMigrations(
+                AppDatabase.MIGRATION_15_16,
+                AppDatabase.MIGRATION_16_17,
+                AppDatabase.MIGRATION_17_18,
+                AppDatabase.MIGRATION_18_19,
+                AppDatabase.MIGRATION_19_20
+            )
             .allowMainThreadQueries()
             .build()
         try {
@@ -191,6 +198,9 @@ class BannerAvisoAndTutorialProfileTest {
                 val user = migratedDb.userDao().getUserById("u_v17")
                 assertNotNull(user)
                 assertFalse(user!!.tutorialCompleted)
+                assertTrue(user.fcmToken.isEmpty())
+                assertTrue(user.notifyCatalogUpdates)
+                assertTrue(user.notifyAssignedContacts)
             }
         } finally {
             migratedDb.close()

@@ -21,6 +21,8 @@ class NotificationHelper(private val context: Context) {
         const val CHANNEL_TEAM_UPDATES = "como_on_team_updates"
         const val CHANNEL_ANNOUNCEMENTS = "como_on_team_announcements"
         const val CHANNEL_CALL_REMINDERS = "como_on_call_reminders"
+        const val CHANNEL_CATALOG_UPDATES = "psa_catalog_updates"
+        const val CHANNEL_ASSIGNED_CONTACTS = "psa_assigned_contacts"
     }
 
     init {
@@ -67,8 +69,33 @@ class NotificationHelper(private val context: Context) {
                 enableVibration(true)
             }
 
+            val catalogChannel = NotificationChannel(
+                CHANNEL_CATALOG_UPDATES,
+                "Actualizaciones de Catálogo PSA",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Avisos automáticos cuando se actualizan precios, cuotas o lanzamientos del catálogo PSA"
+                enableVibration(true)
+            }
+
+            val assignedContactsChannel = NotificationChannel(
+                CHANNEL_ASSIGNED_CONTACTS,
+                "Contactos Asignados",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alertas sobre nuevos contactos o seguimientos asignados"
+                enableVibration(true)
+            }
+
             manager.createNotificationChannels(
-                listOf(defaultChannel, updatesChannel, announcementsChannel, remindersChannel)
+                listOf(
+                    defaultChannel,
+                    updatesChannel,
+                    announcementsChannel,
+                    remindersChannel,
+                    catalogChannel,
+                    assignedContactsChannel
+                )
             )
         }
     }
@@ -206,24 +233,83 @@ class NotificationHelper(private val context: Context) {
         title: String,
         body: String,
         isAppUpdate: Boolean = false,
-        senderName: String = ""
+        senderName: String = "",
+        type: com.example.data.model.TeamNotificationType = com.example.data.model.TeamNotificationType.SUPERUSER_GLOBAL,
+        priority: com.example.data.model.TeamNotificationPriority = com.example.data.model.TeamNotificationPriority.IMPORTANT,
+        actionUrl: String = ""
     ) {
+        showFcmPersonalizedNotification(
+            notifId = notifId,
+            title = title,
+            body = body,
+            type = if (isAppUpdate) com.example.data.model.TeamNotificationType.APP_UPDATE else type,
+            priority = priority,
+            senderName = senderName,
+            actionUrl = actionUrl
+        )
+    }
+
+    fun persistentNotificationId(notifId: String): Int = ("team_notif_$notifId").hashCode()
+
+    fun cancelNotificationById(systemNotificationId: Int) {
+        try {
+            NotificationManagerCompat.from(context).cancel(systemNotificationId)
+        } catch (_: Exception) {
+            // Safe fallback
+        }
+    }
+
+    fun showFcmPersonalizedNotification(
+        notifId: String,
+        title: String,
+        body: String,
+        type: com.example.data.model.TeamNotificationType,
+        priority: com.example.data.model.TeamNotificationPriority = com.example.data.model.TeamNotificationPriority.IMPORTANT,
+        senderName: String = "",
+        actionUrl: String = ""
+    ) {
+        val systemNotificationId = persistentNotificationId(notifId)
         val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            action = com.example.util.FcmNotificationPreferences.ACTION_OPEN_MAIN_BANNER
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("OPEN_TEAM_NOTIF_ID", notifId)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_OPEN_FROM_FCM_BANNER, true)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_OPEN_MAIN_SCREEN, true)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_FCM_SYSTEM_NOTIFICATION_ID, systemNotificationId)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_FCM_NOTIF_ID, notifId)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_FCM_TITLE, title)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_FCM_BODY, body)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_FCM_TYPE, type.name)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_FCM_SENDER, senderName)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_FCM_PRIORITY, priority.name)
+            putExtra(com.example.util.FcmNotificationPreferences.EXTRA_FCM_ACTION_URL, actionUrl)
         }
         val pendingIntent = PendingIntent.getActivity(
             context,
-            ("team_notif_$notifId").hashCode(),
+            systemNotificationId,
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val channelId = if (isAppUpdate) CHANNEL_TEAM_UPDATES else CHANNEL_ANNOUNCEMENTS
-        val displayTitle = if (senderName.isNotBlank() && !isAppUpdate) {
-            "$title • $senderName"
-        } else {
-            title
+        val channelId = when (type) {
+            com.example.data.model.TeamNotificationType.CATALOG_UPDATE -> CHANNEL_CATALOG_UPDATES
+            com.example.data.model.TeamNotificationType.ASSIGNED_CONTACT -> CHANNEL_ASSIGNED_CONTACTS
+            com.example.data.model.TeamNotificationType.APP_UPDATE -> CHANNEL_TEAM_UPDATES
+            else -> CHANNEL_ANNOUNCEMENTS
+        }
+        val prefix = when (type) {
+            com.example.data.model.TeamNotificationType.CATALOG_UPDATE -> "💧 "
+            com.example.data.model.TeamNotificationType.ASSIGNED_CONTACT -> "👤 "
+            com.example.data.model.TeamNotificationType.APP_UPDATE -> "🚀 "
+            else -> ""
+        }
+        val displayTitle = buildString {
+            append(prefix)
+            append(title)
+            if (senderName.isNotBlank() && type != com.example.data.model.TeamNotificationType.APP_UPDATE) {
+                append(" • ")
+                append(senderName)
+            }
         }
 
         val notification = NotificationCompat.Builder(context, channelId)
@@ -231,14 +317,18 @@ class NotificationHelper(private val context: Context) {
             .setContentTitle(displayTitle)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setOngoing(true)
+            .setAutoCancel(false)
             .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
             .build()
 
         try {
             NotificationManagerCompat.from(context).notify(
-                ("team_notif_$notifId").hashCode(),
+                systemNotificationId,
                 notification
             )
         } catch (_: SecurityException) {

@@ -37,7 +37,11 @@ data class UserAccount(
     val canManageSubUsers: Boolean = false,
     val visibilityDepth: Int = 0, // 0 = full subtree below user, N = max N levels down
     val requestedByEmail: String = "",
-    val tutorialCompleted: Boolean = false
+    val tutorialCompleted: Boolean = false,
+    val fcmToken: String = "",
+    val fcmUpdatedAtMs: Long = 0L,
+    val notifyCatalogUpdates: Boolean = true,
+    val notifyAssignedContacts: Boolean = true
 ) {
     val createdAtMs: Long
         get() = createdAt

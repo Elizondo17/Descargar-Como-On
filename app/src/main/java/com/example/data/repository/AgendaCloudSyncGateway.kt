@@ -1,5 +1,6 @@
 package com.example.data.repository
 
+import com.example.data.model.BusinessInviteEntity
 import com.example.data.model.PsaContactLead
 import com.example.data.model.PsaHomeVisit
 import com.example.data.model.PsaPostSaleInstallation
@@ -22,4 +23,6 @@ interface AgendaCloudSyncGateway {
     suspend fun deletePostSale(ownerUid: String, recordId: String): Result<Unit>
     suspend fun upsertContact(ownerUid: String, lead: PsaContactLead): Result<Unit>
     suspend fun deleteContact(ownerUid: String, contactId: String): Result<Unit>
+    suspend fun upsertBusinessInvite(ownerUid: String, invite: BusinessInviteEntity): Result<Unit> = Result.success(Unit)
+    suspend fun deleteBusinessInvite(ownerUid: String, inviteId: String): Result<Unit> = Result.success(Unit)
 }

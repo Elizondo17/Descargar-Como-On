@@ -11,6 +11,8 @@ import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
 import com.example.data.model.ApprovalStatus
+import com.example.data.model.BusinessInviteEntity
+import com.example.data.model.BusinessInviteStatus
 import com.example.data.model.CloudAccessToken
 import com.example.data.model.CloudAccessTokenStatus
 import com.example.data.model.HierarchyRequest
@@ -36,6 +38,7 @@ import java.security.SecureRandom
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.firebase.FirebaseApp
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -95,12 +98,14 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         private const val SUBCOLLECTION_CONTACTS = "contacts"
         private const val SUBCOLLECTION_VISITS = "visits"
         private const val SUBCOLLECTION_POST_SALE = "post_sale"
+        private const val SUBCOLLECTION_BUSINESS_INVITES = "business_invites"
         private const val COLLECTION_SELLER_STATS = "seller_stats"
         private const val COLLECTION_APP_ERRORS = "AppErrors"
         private const val COLLECTION_ACCESS_TOKENS = "access_tokens"
         private const val COLLECTION_HIERARCHY_REQUESTS = "hierarchy_requests"
         private const val COLLECTION_TEAM_NOTIFICATIONS = "team_notifications"
         private const val COLLECTION_GLOBAL_MESSAGES = "mensajes_globales"
+        private const val COLLECTION_FCM_DISPATCH_QUEUE = "fcm_dispatch_queue"
         private const val KEY_DEVICE_ID = "persistent_hardware_device_id"
         private const val KEY_LAST_SYNCED_UID = "last_synced_seller_uid"
         const val BOOTSTRAP_ADMIN_EMAIL = "leonelizondo16@gmail.com"
@@ -112,11 +117,21 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         devicePrefs.edit().putString(KEY_LAST_SYNCED_UID, uid).apply()
     }
 
+    fun isFirebaseInitialized(): Boolean = runCatching {
+        FirebaseApp.getApps(appContext).isNotEmpty() || FirebaseApp.initializeApp(appContext) != null
+    }.getOrDefault(false)
+
+    private fun authOrNull(): FirebaseAuth? =
+        if (isFirebaseInitialized()) runCatching { auth }.getOrNull() else null
+
+    private fun firestoreOrNull(): FirebaseFirestore? =
+        if (isFirebaseInitialized()) runCatching { firestore }.getOrNull() else null
+
     fun normalizeEmail(email: String): String = email.trim().lowercase()
 
-    fun getCurrentFirebaseUser(): FirebaseUser? = auth.currentUser
+    fun getCurrentFirebaseUser(): FirebaseUser? = authOrNull()?.currentUser
 
-    override fun currentOwnerUid(): String = auth.currentUser?.uid.orEmpty()
+    override fun currentOwnerUid(): String = authOrNull()?.currentUser?.uid.orEmpty()
 
     override suspend fun upsertVisit(ownerUid: String, visit: PsaHomeVisit): Result<Unit> =
         upsertSellerVisit(ownerUid, visit)
@@ -135,6 +150,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
 
     override suspend fun deleteContact(ownerUid: String, contactId: String): Result<Unit> =
         deleteSellerContact(ownerUid, contactId)
+
+    override suspend fun upsertBusinessInvite(ownerUid: String, invite: BusinessInviteEntity): Result<Unit> =
+        upsertSellerBusinessInvite(ownerUid, invite)
+
+    override suspend fun deleteBusinessInvite(ownerUid: String, inviteId: String): Result<Unit> =
+        deleteSellerBusinessInvite(ownerUid, inviteId)
 
     fun getOrCreateDeviceId(): String {
         val existing = devicePrefs.getString(KEY_DEVICE_ID, null)
@@ -160,6 +181,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
      * Flujo interactivo con Credential Manager (`GetSignInWithGoogleOption` en su propia solicitud).
      */
     suspend fun signInInteractiveWithGoogle(activityContext: Context): Result<FirebaseUser> {
+        val fbAuth = authOrNull()
+            ?: return Result.failure(
+                IllegalStateException("Firebase no está configurado en este APK (falta google-services.json).")
+            )
         return try {
             val webClientId = resolveWebClientId()
             if (webClientId.isBlank()) {
@@ -181,7 +206,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             ) {
                 val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
                 val firebaseCred = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
-                val authResult = auth.signInWithCredential(firebaseCred).await()
+                val authResult = fbAuth.signInWithCredential(firebaseCred).await()
                 val firebaseUser = authResult.user
                     ?: return Result.failure(IllegalStateException("No se pudo obtener la sesión de Firebase."))
                 Result.success(firebaseUser)
@@ -202,7 +227,8 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
      * Auto-login silencioso al iniciar la app (`GetGoogleIdOption` en su propia GetCredentialRequest separada).
      */
     suspend fun trySilentGoogleSignIn(activityContext: Context): FirebaseUser? {
-        auth.currentUser?.let { return it }
+        val fbAuth = authOrNull() ?: return null
+        fbAuth.currentUser?.let { return it }
         return try {
             val webClientId = resolveWebClientId()
             if (webClientId.isBlank()) return null
@@ -227,7 +253,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             ) {
                 val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
                 val firebaseCred = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
-                auth.signInWithCredential(firebaseCred).await().user
+                fbAuth.signInWithCredential(firebaseCred).await().user
             } else {
                 null
             }
@@ -244,7 +270,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     suspend fun signOutGoogle() {
         withContext(NonCancellable) {
             try {
-                auth.signOut()
+                authOrNull()?.signOut()
             } catch (e: Exception) {
                 Log.w(TAG, "Firebase signOut error: ${e.message}")
             }
@@ -274,8 +300,11 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         val deviceId = getOrCreateDeviceId()
         val deviceLabel = getDeviceHardwareLabel()
 
+        val db = firestoreOrNull()
+            ?: return CloudAuthOutcome.Error("Firebase no está inicializado en este APK (falta google-services.json).")
+
         return try {
-            val docRef = firestore.collection(COLLECTION_USERS).document(emailKey)
+            val docRef = db.collection(COLLECTION_USERS).document(emailKey)
             val snapshot = docRef.get(Source.SERVER).await()
 
             if (!snapshot.exists()) {
@@ -396,13 +425,18 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
      * Escucha en tiempo real cambios en el documento del usuario conectado distinguiendo caché local vs servidor.
      */
     fun observeUserDocument(emailRaw: String): Flow<CloudUserSnapshotEvent> = callbackFlow {
+        val db = firestoreOrNull()
         val emailKey = normalizeEmail(emailRaw)
+        if (db == null) {
+            close()
+            return@callbackFlow
+        }
         if (emailKey.isBlank()) {
             trySend(CloudUserSnapshotEvent(user = null, exists = false, isFromServer = false, serverWallMs = 0L))
             close()
             return@callbackFlow
         }
-        val registration: ListenerRegistration = firestore
+        val registration: ListenerRegistration = db
             .collection(COLLECTION_USERS)
             .document(emailKey)
             .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
@@ -444,7 +478,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
      * Lista en tiempo real de todos los usuarios autorizados (uso exclusivo de Superusuario).
      */
     fun observeAllAuthorizedUsers(): Flow<List<UserAccount>> = callbackFlow {
-        val registration: ListenerRegistration = firestore
+        val db = firestoreOrNull() ?: run {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val registration: ListenerRegistration = db
             .collection(COLLECTION_USERS)
             .addSnapshotListener { snapshots, error ->
                 if (error != null) {
@@ -462,7 +501,11 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
      * Sincronización en tiempo real de la matriz de visibilidad de pestañas.
      */
     fun observeRoleMatrix(): Flow<RoleVisibilityConfig?> = callbackFlow {
-        val registration: ListenerRegistration = firestore
+        val db = firestoreOrNull() ?: run {
+            close()
+            return@callbackFlow
+        }
+        val registration: ListenerRegistration = db
             .collection(COLLECTION_CONFIG)
             .document(DOC_ROLE_MATRIX)
             .addSnapshotListener { snapshot, error ->
@@ -494,8 +537,9 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun fetchAllAuthorizedUsersOnce(): List<UserAccount> {
+        val db = firestoreOrNull() ?: return emptyList()
         return try {
-            val snap = firestore.collection(COLLECTION_USERS).get().await()
+            val snap = db.collection(COLLECTION_USERS).get().await()
             snap.documents.mapNotNull { parseUserDocument(it) }
                 .sortedByDescending { it.createdAtMs }
         } catch (ce: CancellationException) {
@@ -514,7 +558,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         maxDevices: Int,
         canAccessLegacyModules: Boolean = false
     ): Result<UserAccount> {
-        val currentFirebaseUser = auth.currentUser
+        val currentFirebaseUser = authOrNull()?.currentUser
             ?: return Result.failure(
                 IllegalStateException("Conecta tu cuenta de Google de Administrador antes de crear operadores en la nube.")
             )
@@ -591,7 +635,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun updateUserInCloud(user: UserAccount): Result<Unit> {
-        val currentFbUser = auth.currentUser
+        val currentFbUser = authOrNull()?.currentUser
             ?: return Result.failure(
                 IllegalStateException("Conecta tu cuenta Google de Superusuario arriba para guardar cambios en Firestore.")
             )
@@ -656,7 +700,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deleteUserFromCloud(emailRaw: String): Result<Unit> {
-        val currentFbUser = auth.currentUser
+        val currentFbUser = authOrNull()?.currentUser
             ?: return Result.failure(
                 IllegalStateException("Conecta tu cuenta Google de Superusuario arriba para eliminar en Firestore.")
             )
@@ -687,7 +731,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         config: RoleVisibilityConfig,
         globalLegacyEnabled: Boolean? = null
     ): Result<Unit> {
-        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Sesión no iniciada."))
+        val uid = authOrNull()?.currentUser?.uid ?: return Result.failure(IllegalStateException("Sesión no iniciada."))
         val payload = hashMapOf<String, Any>(
             "configType" to DOC_ROLE_MATRIX,
             "updatedByUid" to uid,
@@ -726,7 +770,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     suspend fun publishGlobalPsaPricingToCloud(
         snapshot: com.example.util.PsaCountryPricingSnapshot
     ): Result<String> {
-        val fbUser = auth.currentUser
+        val fbUser = authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
         if (!fbUser.email.equals(BOOTSTRAP_ADMIN_EMAIL, ignoreCase = true)) {
             return Result.failure(IllegalStateException("Solo el Superusuario puede publicar precios globales."))
@@ -763,7 +807,11 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
      */
     fun observeGlobalPsaPricingSync(): Flow<Pair<String, Map<String, com.example.util.PsaCountryPricingSnapshot>>> =
         callbackFlow {
-            val reg = firestore
+            val db = firestoreOrNull() ?: run {
+                close()
+                return@callbackFlow
+            }
+            val reg = db
                 .collection(COLLECTION_CONFIG)
                 .document(DOC_PSA_PRICING_SYNC)
                 .addSnapshotListener { snapshot, error ->
@@ -784,9 +832,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
      * Consulta al servidor de Firestore (Source.SERVER) si existe una versión más reciente publicada.
      */
     suspend fun fetchAppVersionFromServer(): com.example.util.AppUpdateInfo? {
-        if (auth.currentUser == null) return null
+        if (authOrNull()?.currentUser == null) return null
+        val db = firestoreOrNull() ?: return null
         return try {
-            val doc = firestore
+            val doc = db
                 .collection(COLLECTION_CONFIG)
                 .document(DOC_APP_VERSION)
                 .get(Source.SERVER)
@@ -829,7 +878,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         releaseNotes: String,
         forceUpdate: Boolean = false
     ): Result<com.example.util.AppUpdateInfo> {
-        val fbUser = auth.currentUser
+        val fbUser = authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
         if (!fbUser.email.equals(BOOTSTRAP_ADMIN_EMAIL, ignoreCase = true)) {
             return Result.failure(IllegalStateException("Solo el Superusuario puede publicar actualizaciones de versión."))
@@ -883,7 +932,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
      * individual `updateRequired` en Firestore si la regla del vendedor activo lo permite.
      */
     suspend fun clearOwnUpdateLockIfUpgraded(user: UserAccount): Result<Unit> {
-        val fbUser = auth.currentUser
+        val fbUser = authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
         val emailKey = normalizeEmail(user.email)
         if (emailKey.isBlank()) {
@@ -919,7 +968,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         requiredVersionCode: Int,
         reason: String
     ): Result<Unit> {
-        val currentFbUser = auth.currentUser
+        val currentFbUser = authOrNull()?.currentUser
             ?: return Result.failure(
                 IllegalStateException("Conecta tu cuenta Google de Superusuario arriba antes de exigir actualizaciones en Firestore.")
             )
@@ -1007,6 +1056,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         val visibilityDepth = ((data["visibilityDepth"] as? Number)?.toInt() ?: 0).coerceIn(0, 10)
         val requestedByEmail = normalizeEmail((data["requestedByEmail"] as? String).orEmpty()).take(120)
         val tutorialCompleted = (data["tutorialCompleted"] as? Boolean) ?: false
+        val fcmToken = (data["fcmToken"] as? String).orEmpty().trim().take(512)
+        val fcmUpdatedAtMs = (data["fcmUpdatedAtMs"] as? Number)?.toLong()?.coerceAtLeast(0L) ?: 0L
+        val notifyCatalogUpdates = (data["notifyCatalogUpdates"] as? Boolean) ?: true
+        val notifyAssignedContacts = (data["notifyAssignedContacts"] as? Boolean) ?: true
 
         return UserAccount(
             id = id,
@@ -1037,7 +1090,11 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             canManageSubUsers = canManageSubUsers,
             visibilityDepth = visibilityDepth,
             requestedByEmail = requestedByEmail,
-            tutorialCompleted = tutorialCompleted
+            tutorialCompleted = tutorialCompleted,
+            fcmToken = fcmToken,
+            fcmUpdatedAtMs = fcmUpdatedAtMs,
+            notifyCatalogUpdates = notifyCatalogUpdates,
+            notifyAssignedContacts = notifyAssignedContacts
         )
     }
 
@@ -1073,6 +1130,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             "visibilityDepth" to user.visibilityDepth.coerceIn(0, 10),
             "requestedByEmail" to normalizeEmail(user.requestedByEmail).take(120),
             "tutorialCompleted" to user.tutorialCompleted,
+            "fcmToken" to user.fcmToken.trim().take(512),
+            "fcmUpdatedAtMs" to user.fcmUpdatedAtMs.coerceAtLeast(0L),
+            "notifyCatalogUpdates" to user.notifyCatalogUpdates,
+            "notifyAssignedContacts" to user.notifyAssignedContacts,
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
@@ -1104,12 +1165,16 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             "visibilityDepth" to user.visibilityDepth.coerceIn(0, 10),
             "requestedByEmail" to normalizeEmail(user.requestedByEmail).take(120),
             "tutorialCompleted" to user.tutorialCompleted,
+            "fcmToken" to user.fcmToken.trim().take(512),
+            "fcmUpdatedAtMs" to user.fcmUpdatedAtMs.coerceAtLeast(0L),
+            "notifyCatalogUpdates" to user.notifyCatalogUpdates,
+            "notifyAssignedContacts" to user.notifyAssignedContacts,
             "updatedAt" to FieldValue.serverTimestamp()
         )
     }
 
     suspend fun markTutorialCompleted(emailRaw: String, completed: Boolean = true): Result<Unit> {
-        auth.currentUser
+        authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
         val emailKey = normalizeEmail(emailRaw)
         if (emailKey.isBlank()) {
@@ -1157,7 +1222,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         .document(recordId)
 
     suspend fun upsertSellerContact(ownerUid: String, lead: PsaContactLead): Result<Unit> {
-        if (auth.currentUser?.uid != ownerUid || ownerUid.isBlank()) {
+        if (authOrNull()?.currentUser?.uid != ownerUid || ownerUid.isBlank()) {
             return Result.failure(IllegalStateException("Sesión Google requerida para sincronizar contactos."))
         }
         val docId = lead.id.trim().ifBlank { UUID.randomUUID().toString() }.take(80)
@@ -1192,7 +1257,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deleteSellerContact(ownerUid: String, contactId: String): Result<Unit> {
-        if (auth.currentUser?.uid != ownerUid || ownerUid.isBlank() || contactId.isBlank()) {
+        if (authOrNull()?.currentUser?.uid != ownerUid || ownerUid.isBlank() || contactId.isBlank()) {
             return Result.failure(IllegalStateException("Sesión Google requerida."))
         }
         return try {
@@ -1207,11 +1272,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeSellerContacts(ownerUid: String): Flow<SellerWorkspaceSnapshot<PsaContactLead>> = callbackFlow {
-        if (ownerUid.isBlank()) {
+        val db = firestoreOrNull()
+        if (ownerUid.isBlank() || db == null) {
             close()
             return@callbackFlow
         }
-        val reg = firestore
+        val reg = db
             .collection(COLLECTION_WORKSPACES)
             .document(ownerUid)
             .collection(SUBCOLLECTION_CONTACTS)
@@ -1232,7 +1298,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun upsertSellerVisit(ownerUid: String, visit: PsaHomeVisit): Result<Unit> {
-        if (auth.currentUser?.uid != ownerUid || ownerUid.isBlank()) {
+        if (authOrNull()?.currentUser?.uid != ownerUid || ownerUid.isBlank()) {
             return Result.failure(IllegalStateException("Sesión Google requerida para sincronizar visitas."))
         }
         val docId = visit.id.trim().ifBlank { UUID.randomUUID().toString() }.take(80)
@@ -1273,7 +1339,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deleteSellerVisit(ownerUid: String, visitId: String): Result<Unit> {
-        if (auth.currentUser?.uid != ownerUid || ownerUid.isBlank() || visitId.isBlank()) {
+        if (authOrNull()?.currentUser?.uid != ownerUid || ownerUid.isBlank() || visitId.isBlank()) {
             return Result.failure(IllegalStateException("Sesión Google requerida."))
         }
         return try {
@@ -1288,11 +1354,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeSellerVisits(ownerUid: String): Flow<SellerWorkspaceSnapshot<PsaHomeVisit>> = callbackFlow {
-        if (ownerUid.isBlank()) {
+        val db = firestoreOrNull()
+        if (ownerUid.isBlank() || db == null) {
             close()
             return@callbackFlow
         }
-        val reg = firestore
+        val reg = db
             .collection(COLLECTION_WORKSPACES)
             .document(ownerUid)
             .collection(SUBCOLLECTION_VISITS)
@@ -1313,7 +1380,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun upsertPostSaleRecord(ownerUid: String, record: PsaPostSaleInstallation): Result<Unit> {
-        if (auth.currentUser?.uid != ownerUid || ownerUid.isBlank()) {
+        if (authOrNull()?.currentUser?.uid != ownerUid || ownerUid.isBlank()) {
             return Result.failure(IllegalStateException("Sesión Google requerida para sincronizar posventa."))
         }
         val docId = record.id.trim().ifBlank { UUID.randomUUID().toString() }.take(80)
@@ -1351,7 +1418,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deletePostSaleRecord(ownerUid: String, recordId: String): Result<Unit> {
-        if (auth.currentUser?.uid != ownerUid || ownerUid.isBlank() || recordId.isBlank()) {
+        if (authOrNull()?.currentUser?.uid != ownerUid || ownerUid.isBlank() || recordId.isBlank()) {
             return Result.failure(IllegalStateException("Sesión Google requerida."))
         }
         return try {
@@ -1366,11 +1433,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeSellerPostSale(ownerUid: String): Flow<SellerWorkspaceSnapshot<PsaPostSaleInstallation>> = callbackFlow {
-        if (ownerUid.isBlank()) {
+        val db = firestoreOrNull()
+        if (ownerUid.isBlank() || db == null) {
             close()
             return@callbackFlow
         }
-        val reg = firestore
+        val reg = db
             .collection(COLLECTION_WORKSPACES)
             .document(ownerUid)
             .collection(SUBCOLLECTION_POST_SALE)
@@ -1390,12 +1458,94 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         awaitClose { reg.remove() }
     }
 
+    private fun businessInviteDocRef(ownerUid: String, inviteId: String) = firestore
+        .collection(COLLECTION_WORKSPACES)
+        .document(ownerUid)
+        .collection(SUBCOLLECTION_BUSINESS_INVITES)
+        .document(inviteId)
+
+    suspend fun upsertSellerBusinessInvite(ownerUid: String, invite: BusinessInviteEntity): Result<Unit> {
+        if (authOrNull()?.currentUser?.uid != ownerUid || ownerUid.isBlank()) {
+            return Result.failure(IllegalStateException("Sesión Google requerida para sincronizar invitados."))
+        }
+        val docId = invite.id.trim().ifBlank { UUID.randomUUID().toString() }.take(80)
+        val safeStatus = invite.parsedStatus.name
+        val payload = hashMapOf<String, Any>(
+            "id" to docId,
+            "ownerUid" to ownerUid.take(128),
+            "sellerEmail" to normalizeEmail(invite.sellerEmail).take(120),
+            "name" to invite.name.trim().ifBlank { "Invitado" }.take(120),
+            "phone" to invite.phone.trim().take(40),
+            "email" to normalizeEmail(invite.email).take(120),
+            "notes" to invite.notes.trim().take(500),
+            "status" to safeStatus,
+            "presentationDate" to invite.presentationDate.trim().take(20),
+            "presentationTime" to invite.presentationTime.trim().take(16),
+            "reminderEnabled" to invite.reminderEnabled,
+            "reminderAtMs" to invite.reminderAtMs.coerceAtLeast(0L),
+            "whatsappSentCount" to invite.whatsappSentCount.coerceIn(0, 10000),
+            "linkedRequestId" to invite.linkedRequestId.trim().take(80),
+            "createdAtMs" to invite.createdAtMs.coerceAtLeast(0L),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        return try {
+            businessInviteDocRef(ownerUid, docId).set(payload).await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("upsertSellerBusinessInvite", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteSellerBusinessInvite(ownerUid: String, inviteId: String): Result<Unit> {
+        if (authOrNull()?.currentUser?.uid != ownerUid || ownerUid.isBlank() || inviteId.isBlank()) {
+            return Result.failure(IllegalStateException("Sesión Google requerida."))
+        }
+        return try {
+            businessInviteDocRef(ownerUid, inviteId).delete().await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("deleteSellerBusinessInvite", e)
+            Result.failure(e)
+        }
+    }
+
+    fun observeSellerBusinessInvites(ownerUid: String): Flow<SellerWorkspaceSnapshot<BusinessInviteEntity>> = callbackFlow {
+        val db = firestoreOrNull()
+        if (ownerUid.isBlank() || db == null) {
+            close()
+            return@callbackFlow
+        }
+        val reg = db
+            .collection(COLLECTION_WORKSPACES)
+            .document(ownerUid)
+            .collection(SUBCOLLECTION_BUSINESS_INVITES)
+            .addSnapshotListener(MetadataChanges.INCLUDE) { snap, error ->
+                if (error != null) {
+                    handleFirestoreError("observeSellerBusinessInvites", error)
+                    return@addSnapshotListener
+                }
+                val list = snap?.documents?.mapNotNull { parseBusinessInvite(it) }.orEmpty()
+                trySend(
+                    SellerWorkspaceSnapshot(
+                        items = list,
+                        isFromCache = snap?.metadata?.isFromCache ?: false
+                    )
+                )
+            }
+        awaitClose { reg.remove() }
+    }
+
     // =====================================================================
     // SELLER AGGREGATED PERFORMANCE STATS (/seller_stats/{ownerUid})
     // =====================================================================
 
     suspend fun upsertSellerStats(stats: SellerPerformanceStats): Result<Unit> {
-        val currentUid = auth.currentUser?.uid
+        val currentUid = authOrNull()?.currentUser?.uid
         if (currentUid.isNullOrBlank() || stats.ownerUid != currentUid) {
             return Result.failure(IllegalStateException("Sesión Google requerida para publicar estadísticas."))
         }
@@ -1440,7 +1590,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeAllSellerStats(): Flow<List<SellerPerformanceStats>> = callbackFlow {
-        val reg = firestore
+        val db = firestoreOrNull() ?: run {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val reg = db
             .collection(COLLECTION_SELLER_STATS)
             .addSnapshotListener { snap, error ->
                 if (error != null) {
@@ -1455,13 +1610,14 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeSubordinateSellerStats(managerEmailRaw: String): Flow<List<SellerPerformanceStats>> = callbackFlow {
+        val db = firestoreOrNull()
         val managerEmail = normalizeEmail(managerEmailRaw)
-        if (managerEmail.isBlank()) {
+        if (managerEmail.isBlank() || db == null) {
             trySend(emptyList())
             close()
             return@callbackFlow
         }
-        val reg = firestore
+        val reg = db
             .collection(COLLECTION_SELLER_STATS)
             .whereArrayContains("supervisorChainEmails", managerEmail)
             .addSnapshotListener { snap, error ->
@@ -1477,13 +1633,14 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeSubordinateUsers(managerEmailRaw: String): Flow<List<UserAccount>> = callbackFlow {
+        val db = firestoreOrNull()
         val managerEmail = normalizeEmail(managerEmailRaw)
-        if (managerEmail.isBlank()) {
+        if (managerEmail.isBlank() || db == null) {
             trySend(emptyList())
             close()
             return@callbackFlow
         }
-        val reg = firestore
+        val reg = db
             .collection(COLLECTION_USERS)
             .whereArrayContains("supervisorChainEmails", managerEmail)
             .addSnapshotListener { snap, error ->
@@ -1498,8 +1655,9 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun fetchAllSellerStatsOnce(): List<SellerPerformanceStats> {
+        val db = firestoreOrNull() ?: return emptyList()
         return try {
-            val snap = firestore.collection(COLLECTION_SELLER_STATS).get().await()
+            val snap = db.collection(COLLECTION_SELLER_STATS).get().await()
             snap.documents.mapNotNull { parseSellerStats(it) }
                 .sortedByDescending { it.lastActivityAtMs.coerceAtLeast(it.updatedAtMs) }
         } catch (ce: CancellationException) {
@@ -1607,6 +1765,33 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         )
     }
 
+    private fun parseBusinessInvite(doc: DocumentSnapshot): BusinessInviteEntity? {
+        val data = doc.data ?: return null
+        val id = (data["id"] as? String).orEmpty().ifBlank { doc.id }
+        val statusRaw = (data["status"] as? String).orEmpty()
+        val parsedStatus = BusinessInviteStatus.fromRaw(statusRaw)
+        val updatedAtMs = doc.getTimestamp("updatedAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time
+            ?: System.currentTimeMillis()
+        return BusinessInviteEntity(
+            id = id,
+            ownerUid = (data["ownerUid"] as? String).orEmpty(),
+            sellerEmail = normalizeEmail((data["sellerEmail"] as? String).orEmpty()),
+            name = (data["name"] as? String).orEmpty().ifBlank { "Invitado" },
+            phone = (data["phone"] as? String).orEmpty(),
+            email = normalizeEmail((data["email"] as? String).orEmpty()),
+            notes = (data["notes"] as? String).orEmpty(),
+            status = parsedStatus.name,
+            presentationDate = (data["presentationDate"] as? String).orEmpty(),
+            presentationTime = (data["presentationTime"] as? String).orEmpty(),
+            reminderEnabled = (data["reminderEnabled"] as? Boolean) ?: false,
+            reminderAtMs = (data["reminderAtMs"] as? Number)?.toLong() ?: 0L,
+            whatsappSentCount = (data["whatsappSentCount"] as? Number)?.toInt() ?: 0,
+            linkedRequestId = (data["linkedRequestId"] as? String).orEmpty(),
+            createdAtMs = (data["createdAtMs"] as? Number)?.toLong() ?: System.currentTimeMillis(),
+            updatedAtMs = updatedAtMs
+        )
+    }
+
     private fun parseSellerStats(doc: DocumentSnapshot): SellerPerformanceStats? {
         val data = doc.data ?: return null
         val ownerUid = (data["ownerUid"] as? String).orEmpty().ifBlank { doc.id }
@@ -1655,11 +1840,13 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun flushPendingAppErrors(reporterNameOverride: String = ""): Int {
+        val db = firestoreOrNull() ?: return 0
+        val fbAuth = authOrNull() ?: return 0
         return try {
             com.example.util.AppErrorLogger.flushPendingErrors(
                 context = appContext,
-                firestore = firestore,
-                auth = auth,
+                firestore = db,
+                auth = fbAuth,
                 reporterNameOverride = reporterNameOverride
             )
         } catch (ce: CancellationException) {
@@ -1671,7 +1858,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeAppErrors(): Flow<List<com.example.util.AppErrorReport>> = callbackFlow {
-        val reg: ListenerRegistration = firestore
+        val db = firestoreOrNull() ?: run {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val reg: ListenerRegistration = db
             .collection(COLLECTION_APP_ERRORS)
             .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
             .limit(50)
@@ -1687,8 +1879,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun fetchAppErrorsOnce(): Result<List<com.example.util.AppErrorReport>> {
+        val db = firestoreOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase no está inicializado en este APK."))
         return try {
-            val snap = firestore
+            val snap = db
                 .collection(COLLECTION_APP_ERRORS)
                 .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
                 .limit(50)
@@ -1705,7 +1899,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun markAppErrorStatus(errorId: String, status: String): Result<Unit> {
-        val currentFbUser = auth.currentUser
+        val currentFbUser = authOrNull()?.currentUser
             ?: return Result.failure(
                 IllegalStateException("Conecta tu cuenta Google de Superusuario arriba para administrar AppErrors.")
             )
@@ -1742,7 +1936,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deleteAppError(errorId: String): Result<Unit> {
-        val currentFbUser = auth.currentUser
+        val currentFbUser = authOrNull()?.currentUser
             ?: return Result.failure(
                 IllegalStateException("Conecta tu cuenta Google de Superusuario arriba para eliminar de AppErrors.")
             )
@@ -1813,7 +2007,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeAccessTokens(): Flow<List<CloudAccessToken>> = callbackFlow {
-        val reg: ListenerRegistration = firestore
+        val db = firestoreOrNull() ?: run {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val reg: ListenerRegistration = db
             .collection(COLLECTION_ACCESS_TOKENS)
             .addSnapshotListener { snapshots, error ->
                 if (error != null) {
@@ -1830,8 +2029,10 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun fetchAccessTokensOnce(): Result<List<CloudAccessToken>> {
+        val db = firestoreOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase no está inicializado en este APK."))
         return try {
-            val snap = firestore.collection(COLLECTION_ACCESS_TOKENS)
+            val snap = db.collection(COLLECTION_ACCESS_TOKENS)
                 .get(Source.SERVER)
                 .await()
             val list = snap.documents
@@ -1853,7 +2054,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         maxDevices: Int,
         notes: String
     ): Result<CloudAccessToken> {
-        val adminUser = auth.currentUser
+        val adminUser = authOrNull()?.currentUser
             ?: return Result.failure(
                 IllegalStateException("Conecta tu cuenta Google de Superusuario antes de generar tokens.")
             )
@@ -1920,12 +2121,14 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun revokeAccessTokenInCloud(tokenCodeRaw: String): Result<Unit> {
+        val db = firestoreOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase no está inicializado en este APK."))
         val tokenCode = tokenCodeRaw.trim().uppercase()
         if (tokenCode.length < 6) {
             return Result.failure(IllegalArgumentException("Código de token inválido."))
         }
         return try {
-            firestore.collection(COLLECTION_ACCESS_TOKENS)
+            db.collection(COLLECTION_ACCESS_TOKENS)
                 .document(tokenCode)
                 .update(
                     mapOf(
@@ -1944,12 +2147,14 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deleteAccessTokenInCloud(tokenCodeRaw: String): Result<Unit> {
+        val db = firestoreOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase no está inicializado en este APK."))
         val tokenCode = tokenCodeRaw.trim().uppercase()
         if (tokenCode.length < 6) {
             return Result.failure(IllegalArgumentException("Código de token inválido."))
         }
         return try {
-            firestore.collection(COLLECTION_ACCESS_TOKENS)
+            db.collection(COLLECTION_ACCESS_TOKENS)
                 .document(tokenCode)
                 .delete()
                 .await()
@@ -1963,7 +2168,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun redeemAccessTokenForSignedInUser(tokenCodeRaw: String): CloudAuthOutcome {
-        val firebaseUser = auth.currentUser
+        val firebaseUser = authOrNull()?.currentUser
             ?: return CloudAuthOutcome.Error("Inicia sesión con Google primero para poder canjear tu token.")
         val emailKey = normalizeEmail(firebaseUser.email.orEmpty())
         if (emailKey.isBlank()) {
@@ -2110,7 +2315,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     // =====================================================================
 
     fun observeAllHierarchyRequests(): Flow<List<HierarchyRequest>> = callbackFlow {
-        val reg: ListenerRegistration = firestore
+        val db = firestoreOrNull() ?: run {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val reg: ListenerRegistration = db
             .collection(COLLECTION_HIERARCHY_REQUESTS)
             .addSnapshotListener { snapshots, error ->
                 if (error != null) {
@@ -2127,13 +2337,14 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     fun observeMyHierarchyRequests(managerEmailRaw: String): Flow<List<HierarchyRequest>> = callbackFlow {
+        val db = firestoreOrNull()
         val managerEmail = normalizeEmail(managerEmailRaw)
-        if (managerEmail.isBlank()) {
+        if (managerEmail.isBlank() || db == null) {
             trySend(emptyList())
             close()
             return@callbackFlow
         }
-        val reg: ListenerRegistration = firestore
+        val reg: ListenerRegistration = db
             .collection(COLLECTION_HIERARCHY_REQUESTS)
             .whereEqualTo("requestedByEmail", managerEmail)
             .addSnapshotListener { snapshots, error ->
@@ -2160,7 +2371,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         maxDevices: Int,
         notes: String
     ): Result<HierarchyRequest> {
-        val currentUser = auth.currentUser
+        val currentUser = authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Inicia sesión con Google primero."))
         val requesterEmail = normalizeEmail(currentUser.email.orEmpty())
         val requestedParentEmail = normalizeEmail(parentEmailRaw.ifBlank { requesterEmail })
@@ -2243,7 +2454,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         allowSubManagement: Boolean = false,
         visibilityDepth: Int = 0
     ): Result<String> {
-        val adminUser = auth.currentUser
+        val adminUser = authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Inicia sesión con Google de Superusuario."))
         val resolverEmail = normalizeEmail(adminUser.email.orEmpty())
         val targetEmail = normalizeEmail(request.targetEmail)
@@ -2363,7 +2574,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun rejectHierarchyRequest(requestId: String): Result<Unit> {
-        val adminUser = auth.currentUser
+        val adminUser = authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Inicia sesión con Google de Superusuario."))
         val resolverEmail = normalizeEmail(adminUser.email.orEmpty())
         return try {
@@ -2408,10 +2619,12 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             return Result.failure(IllegalStateException("No se encontró el usuario en la estructura actual."))
         }
 
+        val db = firestoreOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase no está inicializado en este APK."))
         return try {
-            val batch = firestore.batch()
+            val batch = db.batch()
             for (step in updates) {
-                val userRef = firestore.collection(COLLECTION_USERS).document(step.user.normalizedEmail)
+                val userRef = db.collection(COLLECTION_USERS).document(step.user.normalizedEmail)
                 batch.update(
                     userRef,
                     mapOf(
@@ -2422,7 +2635,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
                     )
                 )
                 if (step.user.ownerUid.isNotBlank()) {
-                    val statsRef = firestore.collection(COLLECTION_SELLER_STATS).document(step.user.ownerUid)
+                    val statsRef = db.collection(COLLECTION_SELLER_STATS).document(step.user.ownerUid)
                     val snap = statsRef.get().await()
                     if (snap.exists()) {
                         batch.update(
@@ -2455,6 +2668,8 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         isBlocked: Boolean? = null,
         grantDaysIfNeeded: Int? = null
     ): Result<Unit> {
+        val db = firestoreOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase no está inicializado en este APK."))
         val emailKey = normalizeEmail(emailRaw)
         if (emailKey.isBlank()) return Result.failure(IllegalArgumentException("Correo inválido."))
         val payload = hashMapOf<String, Any>(
@@ -2474,7 +2689,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             payload["expiresAt"] = Timestamp(Date(System.currentTimeMillis() + safeDays.toLong() * 86_400_000L))
         }
         return try {
-            firestore.collection(COLLECTION_USERS)
+            db.collection(COLLECTION_USERS)
                 .document(emailKey)
                 .update(payload)
                 .await()
@@ -2526,7 +2741,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         requiredVersionCode: Int = 0,
         senderNameOverride: String = ""
     ): Result<TeamNotification> {
-        val currentFbUser = auth.currentUser
+        val currentFbUser = authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Inicia sesión con Google antes de enviar avisos."))
         val senderEmail = normalizeEmail(currentFbUser.email.orEmpty())
         if (senderEmail.isBlank()) {
@@ -2617,15 +2832,16 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         viewerEmailRaw: String,
         isSuperuser: Boolean
     ): Flow<List<TeamNotification>> = callbackFlow {
+        val db = firestoreOrNull()
         val cleanEmail = normalizeEmail(viewerEmailRaw)
-        if (cleanEmail.isBlank()) {
+        if (cleanEmail.isBlank() || db == null) {
             trySend(emptyList())
             close()
             return@callbackFlow
         }
 
         if (isSuperuser && cleanEmail == BOOTSTRAP_ADMIN_EMAIL) {
-            val reg = firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+            val reg = db.collection(COLLECTION_TEAM_NOTIFICATIONS)
                 .addSnapshotListener { snap, error ->
                     if (error != null) {
                         handleFirestoreError("observeTeamNotifications(admin)", error)
@@ -2650,7 +2866,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             trySend(merged)
         }
 
-        val regAll = firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+        val regAll = db.collection(COLLECTION_TEAM_NOTIFICATIONS)
             .whereEqualTo("targetMode", TeamNotificationTargetMode.ALL.name)
             .addSnapshotListener { snap, error ->
                 if (error != null) {
@@ -2662,7 +2878,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
                 emitMerged()
             }
 
-        val regDirect = firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+        val regDirect = db.collection(COLLECTION_TEAM_NOTIFICATIONS)
             .whereEqualTo("targetEmail", cleanEmail)
             .addSnapshotListener { snap, error ->
                 if (error != null) {
@@ -2674,7 +2890,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
                 emitMerged()
             }
 
-        val regSent = firestore.collection(COLLECTION_TEAM_NOTIFICATIONS)
+        val regSent = db.collection(COLLECTION_TEAM_NOTIFICATIONS)
             .whereEqualTo("senderEmail", cleanEmail)
             .addSnapshotListener { snap, error ->
                 if (error != null) {
@@ -2720,8 +2936,9 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     // =====================================================================
 
     fun observeMensajesGlobales(includeInactiveForSuperuser: Boolean = false): Flow<List<MensajeGlobal>> = callbackFlow {
-        val fbUser = auth.currentUser
-        if (fbUser == null) {
+        val db = firestoreOrNull()
+        val fbUser = authOrNull()?.currentUser
+        if (fbUser == null || db == null) {
             trySend(emptyList())
             close()
             return@callbackFlow
@@ -2729,9 +2946,9 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         val viewerEmail = normalizeEmail(fbUser.email.orEmpty())
         val canListAll = includeInactiveForSuperuser && viewerEmail == BOOTSTRAP_ADMIN_EMAIL
         val query = if (canListAll) {
-            firestore.collection(COLLECTION_GLOBAL_MESSAGES)
+            db.collection(COLLECTION_GLOBAL_MESSAGES)
         } else {
-            firestore.collection(COLLECTION_GLOBAL_MESSAGES).whereEqualTo("activo", true)
+            db.collection(COLLECTION_GLOBAL_MESSAGES).whereEqualTo("activo", true)
         }
         val reg: ListenerRegistration = query.addSnapshotListener { snapshots, error ->
             if (error != null) {
@@ -2753,7 +2970,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
         prioridad: MensajeGlobalPrioridad = MensajeGlobalPrioridad.IMPORTANTE,
         autorNombreOverride: String = ""
     ): Result<MensajeGlobal> {
-        val currentFbUser = auth.currentUser
+        val currentFbUser = authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Inicia sesión con Google antes de publicar anuncios globales."))
         val autorEmail = normalizeEmail(currentFbUser.email.orEmpty())
         if (autorEmail.isBlank()) {
@@ -2817,7 +3034,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun setMensajeGlobalActivo(mensajeId: String, activo: Boolean): Result<Unit> {
-        auth.currentUser
+        authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
         val cleanId = mensajeId.trim()
         if (cleanId.length < 3) {
@@ -2843,7 +3060,7 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
     }
 
     suspend fun deleteMensajeGlobal(mensajeId: String): Result<Unit> {
-        auth.currentUser
+        authOrNull()?.currentUser
             ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
         val cleanId = mensajeId.trim()
         if (cleanId.length < 3) {
@@ -2878,5 +3095,135 @@ class FirestoreTeamRepository(context: Context) : AgendaCloudSyncGateway {
             autorUid = (data["autorUid"] as? String).orEmpty(),
             creadoEnMs = maxOf(rawMs, serverMs)
         )
+    }
+
+    // =====================================================================
+    // FIREBASE CLOUD MESSAGING TOKEN & PERSONALIZED PUSH QUEUE
+    // =====================================================================
+
+    suspend fun syncOwnFcmSettingsIfSignedIn(
+        token: String? = null,
+        notifyCatalogUpdates: Boolean? = null,
+        notifyAssignedContacts: Boolean? = null
+    ): Result<Unit> {
+        val fbUser = authOrNull()?.currentUser
+            ?: return Result.failure(IllegalStateException("Sesión Google requerida."))
+        val emailKey = normalizeEmail(fbUser.email.orEmpty())
+        if (emailKey.isBlank()) {
+            return Result.failure(IllegalArgumentException("Usuario sin correo configurado."))
+        }
+        val payload = hashMapOf<String, Any>(
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        val cleanToken = token?.trim()?.take(512)
+        if (!cleanToken.isNullOrBlank()) {
+            payload["fcmToken"] = cleanToken
+            payload["fcmUpdatedAtMs"] = System.currentTimeMillis()
+        }
+        if (notifyCatalogUpdates != null) {
+            payload["notifyCatalogUpdates"] = notifyCatalogUpdates
+        }
+        if (notifyAssignedContacts != null) {
+            payload["notifyAssignedContacts"] = notifyAssignedContacts
+        }
+        if (payload.size <= 1) return Result.success(Unit)
+        return try {
+            firestore.collection(COLLECTION_USERS)
+                .document(emailKey)
+                .update(payload)
+                .await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("syncOwnFcmSettingsIfSignedIn", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun enqueueFcmDispatch(
+        category: TeamNotificationType,
+        priority: TeamNotificationPriority,
+        targetMode: TeamNotificationTargetMode,
+        targetEmailRaw: String = "",
+        targetTokenRaw: String = "",
+        title: String,
+        body: String,
+        actionUrl: String = "",
+        senderNameOverride: String = ""
+    ): Result<String> {
+        val currentFbUser = authOrNull()?.currentUser
+            ?: return Result.failure(IllegalStateException("Inicia sesión con Google antes de encolar notificaciones push."))
+        val senderEmail = normalizeEmail(currentFbUser.email.orEmpty())
+        if (senderEmail.isBlank()) {
+            return Result.failure(IllegalStateException("Tu cuenta Google no devolvió un correo válido."))
+        }
+        val cleanTargetEmail = normalizeEmail(targetEmailRaw).take(120)
+        val cleanToken = targetTokenRaw.trim().take(512)
+        if (targetMode == TeamNotificationTargetMode.USER && cleanToken.length < 10) {
+            // Vendedor sin token FCM registrado todavía; team_notifications entregará el aviso en vivo
+            return Result.success("")
+        }
+        val dispatchMode: String
+        val targetTopic: String
+        val targetToken: String
+        val payloadTargetEmail: String
+        if (targetMode == TeamNotificationTargetMode.USER) {
+            dispatchMode = "TOKEN"
+            targetTopic = ""
+            targetToken = cleanToken
+            payloadTargetEmail = cleanTargetEmail
+        } else {
+            dispatchMode = "TOPIC"
+            targetTopic = when (category) {
+                TeamNotificationType.CATALOG_UPDATE -> com.example.util.FcmNotificationPreferences.TOPIC_CATALOG_UPDATES
+                TeamNotificationType.ASSIGNED_CONTACT -> com.example.util.FcmNotificationPreferences.TOPIC_ASSIGNED_CONTACTS
+                else -> com.example.util.FcmNotificationPreferences.TOPIC_PERSONALIZED_ALERTS
+            }
+            targetToken = ""
+            payloadTargetEmail = ""
+        }
+        val cleanTitle = title.trim().take(120)
+        val cleanBody = body.trim().take(1000)
+        if (cleanTitle.isBlank() || cleanBody.isBlank()) {
+            return Result.failure(IllegalArgumentException("Completa título y mensaje."))
+        }
+        val cleanSenderName = senderNameOverride.trim()
+            .ifBlank { currentFbUser.displayName?.trim().orEmpty() }
+            .ifBlank { senderEmail.substringBefore("@") }
+            .take(80)
+        val dispatchId = "fcmq_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        val nowMs = System.currentTimeMillis()
+        val payload = hashMapOf<String, Any>(
+            "id" to dispatchId,
+            "category" to category.name,
+            "targetMode" to dispatchMode,
+            "targetTopic" to targetTopic,
+            "targetToken" to targetToken,
+            "targetEmail" to payloadTargetEmail,
+            "title" to cleanTitle,
+            "body" to cleanBody,
+            "priority" to priority.name,
+            "actionUrl" to actionUrl.trim().take(500),
+            "senderEmail" to senderEmail,
+            "senderName" to cleanSenderName,
+            "senderUid" to currentFbUser.uid.take(128),
+            "status" to "QUEUED",
+            "createdAtMs" to nowMs,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        return try {
+            firestore.collection(COLLECTION_FCM_DISPATCH_QUEUE)
+                .document(dispatchId)
+                .set(payload)
+                .await()
+            Result.success(dispatchId)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError("enqueueFcmDispatch", e)
+            Result.failure(e)
+        }
     }
 }

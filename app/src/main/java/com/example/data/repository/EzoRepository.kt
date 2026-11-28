@@ -65,6 +65,7 @@ class EzoRepository(
     private val agendaSyncDao = database.agendaSyncDao()
     private val callReminderDao = database.callReminderDao()
     private val readNotificationDao = database.readNotificationDao()
+    private val businessInviteDao = database.businessInviteDao()
 
     private val prefs = context?.getSharedPreferences("como_on_auth_prefs", Context.MODE_PRIVATE)
     val cloudTeamRepository: FirestoreTeamRepository? =
@@ -116,6 +117,32 @@ class EzoRepository(
         userDao.insertAll(remoteUsers)
     }
 
+    suspend fun updateLocalFcmSettings(
+        email: String,
+        token: String,
+        updatedAtMs: Long,
+        notifyCatalog: Boolean,
+        notifyContacts: Boolean
+    ) {
+        if (email.isBlank()) return
+        userDao.updateFcmSettingsByEmail(
+            email = email.trim().lowercase(),
+            token = token,
+            updatedAtMs = updatedAtMs,
+            notifyCatalog = notifyCatalog,
+            notifyContacts = notifyContacts
+        )
+        val active = _currentUser.value
+        if (active != null && active.email.equals(email.trim(), ignoreCase = true)) {
+            _currentUser.value = active.copy(
+                fcmToken = token,
+                fcmUpdatedAtMs = updatedAtMs,
+                notifyCatalogUpdates = notifyCatalog,
+                notifyAssignedContacts = notifyContacts
+            )
+        }
+    }
+
     val allUsers: Flow<List<UserAccount>> = userDao.getAllUsers()
     val allUserTokens: Flow<List<UserToken>> = userTokenDao.getAllTokens()
     val allFolders: Flow<List<ScriptFolder>> = scriptDao.getAllFolders()
@@ -128,6 +155,7 @@ class EzoRepository(
     val allPostSaleInstallations: Flow<List<PsaPostSaleInstallation>> = psaPostSaleDao.getAllInstallations()
     val allCallReminders: Flow<List<CallReminderEntity>> = callReminderDao.getAllReminders()
     val readNotificationIds: Flow<List<String>> = readNotificationDao.getReadNotificationIds()
+    val allBusinessInvites: Flow<List<com.example.data.model.BusinessInviteEntity>> = businessInviteDao.getAllInvites()
 
     val allScannedChats: Flow<List<ScannedChat>> = scannedChatDao.getAllScannedChats()
     val selectedScannedChats: Flow<List<ScannedChat>> = scannedChatDao.getSelectedChats()
@@ -1271,6 +1299,32 @@ class EzoRepository(
         triggerBackgroundAgendaSyncIfOnline()
     }
 
+    suspend fun saveBusinessInvite(invite: com.example.data.model.BusinessInviteEntity) {
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        val normalized = invite.copy(
+            ownerUid = if (uid.isNotBlank()) uid else invite.ownerUid,
+            updatedAtMs = now
+        )
+        database.withTransaction {
+            businessInviteDao.insertInvite(normalized)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.BUSINESS_INVITE, normalized.id, AgendaSyncOperation.UPSERT, uid, now)
+        }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
+    }
+
+    suspend fun deleteBusinessInvite(inviteId: String) {
+        val uid = currentAgendaOwnerUid()
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            businessInviteDao.deleteById(inviteId)
+            enqueueAgendaSyncOpLocked(AgendaSyncEntityType.BUSINESS_INVITE, inviteId, AgendaSyncOperation.DELETE, uid, now)
+        }
+        refreshAgendaPendingStatusCount()
+        triggerBackgroundAgendaSyncIfOnline()
+    }
+
     // PSA Contact Leads & Interactions Operations (Room Offline-First + Persistent Outbox)
     suspend fun insertPsaLead(lead: com.example.data.model.PsaContactLead) {
         val uid = currentAgendaOwnerUid()
@@ -1448,6 +1502,7 @@ class EzoRepository(
             psaContactDao.clearAllLeads()
             psaContactDao.clearAllInteractions()
             psaPostSaleDao.clearAll()
+            businessInviteDao.clearAll()
             agendaSyncDao.clearAll()
         }
         _agendaSyncStatus.value = AgendaSyncStatus()
@@ -1552,6 +1607,34 @@ class EzoRepository(
         }
     }
 
+    suspend fun replaceRemoteBusinessInvites(
+        invites: List<com.example.data.model.BusinessInviteEntity>,
+        isFromCache: Boolean = false
+    ) {
+        if (isFromCache && invites.isEmpty()) return
+        database.withTransaction {
+            val pendingOps = agendaSyncDao.getPendingOpsByTypeOnce(AgendaSyncEntityType.BUSINESS_INVITE.name)
+            val pendingUpsertIds = pendingOps
+                .filter { it.operation == AgendaSyncOperation.UPSERT.name }
+                .map { it.entityId }
+                .toSet()
+            val pendingDeleteIds = pendingOps
+                .filter { it.operation == AgendaSyncOperation.DELETE.name }
+                .map { it.entityId }
+                .toSet()
+
+            val localById = businessInviteDao.getAllInvitesOnce().associateBy { it.id }
+            val preservedLocalUpserts = pendingUpsertIds.mapNotNull { localById[it] }
+            val remoteFiltered = invites.filter { it.id !in pendingDeleteIds && it.id !in pendingUpsertIds }
+            val merged = (remoteFiltered + preservedLocalUpserts).distinctBy { it.id }
+
+            businessInviteDao.clearAll()
+            if (merged.isNotEmpty()) {
+                businessInviteDao.insertInvites(merged)
+            }
+        }
+    }
+
     private suspend fun enqueuePreExistingUnboundOrLegacyRecords(uid: String) {
         val outboxPrefKey = "agenda_outbox_bootstrapped_$uid"
         val alreadyBootstrapped = prefs?.getBoolean(outboxPrefKey, false) ?: false
@@ -1585,6 +1668,21 @@ class EzoRepository(
                     operation = AgendaSyncOperation.UPSERT.name,
                     ownerUid = uid,
                     queuedAtMs = rec.updatedAtMs.takeIf { it > 0L } ?: now
+                )
+            }
+        }
+
+        val localInvites = businessInviteDao.getAllInvitesOnce()
+        localInvites.forEach { invite ->
+            val key = PendingAgendaSyncEntity.buildKey(AgendaSyncEntityType.BUSINESS_INVITE, invite.id)
+            if (key !in existingOpsByKey && (invite.ownerUid.isBlank() || !alreadyBootstrapped)) {
+                toEnqueue += PendingAgendaSyncEntity(
+                    queueKey = key,
+                    entityType = AgendaSyncEntityType.BUSINESS_INVITE.name,
+                    entityId = invite.id,
+                    operation = AgendaSyncOperation.UPSERT.name,
+                    ownerUid = uid,
+                    queuedAtMs = invite.updatedAtMs.takeIf { it > 0L } ?: now
                 )
             }
         }
@@ -1703,6 +1801,23 @@ class EzoRepository(
                             }
                         }
                         AgendaSyncOperation.DELETE -> gateway.deleteContact(uid, op.entityId)
+                    }
+
+                    AgendaSyncEntityType.BUSINESS_INVITE -> when (operation) {
+                        AgendaSyncOperation.UPSERT -> {
+                            val localInvite = businessInviteDao.getInviteById(op.entityId)
+                            if (localInvite == null) {
+                                Result.success(Unit)
+                            } else {
+                                val owned = if (localInvite.ownerUid != uid) {
+                                    localInvite.copy(ownerUid = uid).also { businessInviteDao.insertInvite(it) }
+                                } else {
+                                    localInvite
+                                }
+                                gateway.upsertBusinessInvite(uid, owned)
+                            }
+                        }
+                        AgendaSyncOperation.DELETE -> gateway.deleteBusinessInvite(uid, op.entityId)
                     }
                 }
 

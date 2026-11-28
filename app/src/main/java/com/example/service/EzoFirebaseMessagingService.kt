@@ -3,31 +3,35 @@ package com.example.service
 import android.util.Log
 import com.example.data.model.AlertSeverity
 import com.example.data.model.CriticalCrmAlert
+import com.example.data.repository.FirestoreTeamRepository
 import com.example.util.CriticalNotificationHelper
+import com.example.util.FcmNotificationPreferences
+import com.example.util.FcmPayloadRouter
+import com.example.util.FcmRoutedMessage
 import com.example.util.UnattendedAutomationLogger
-import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class EzoFirebaseMessagingService : FirebaseMessagingService() {
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        Log.i(TAG, "Nuevo token FCM recibido: $token")
-        
-        // Auto-suscribir inmediatamente al tema de alertas críticas
-        try {
-            FirebaseMessaging.getInstance().subscribeToTopic(CriticalCrmAlert.TOPIC_CRITICAL_ALERTS)
-                .addOnCompleteListener { task ->
-                    if (task.isSuccessful) {
-                        Log.i(TAG, "Suscripción exitosa a topic: ${CriticalCrmAlert.TOPIC_CRITICAL_ALERTS}")
-                    } else {
-                        Log.w(TAG, "Fallo al suscribir a topic: ${task.exception?.message}")
-                    }
-                }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error durante suscripción a topic", e)
+        Log.i(TAG, "Nuevo token FCM recibido")
+        FcmNotificationPreferences.saveCachedToken(applicationContext, token)
+        FcmNotificationPreferences.syncTopicSubscriptions(applicationContext)
+
+        serviceScope.launch {
+            runCatching {
+                FirestoreTeamRepository(applicationContext).syncOwnFcmSettingsIfSignedIn(token = token)
+            }.onFailure { err ->
+                Log.d(TAG, "Sync diferido de token FCM: ${err.message}")
+            }
         }
     }
 
@@ -35,63 +39,74 @@ class EzoFirebaseMessagingService : FirebaseMessagingService() {
         super.onMessageReceived(remoteMessage)
         Log.i(TAG, "Mensaje FCM recibido de: ${remoteMessage.from}")
 
-        val data = remoteMessage.data
-        val title = data["title"] 
-            ?: remoteMessage.notification?.title 
-            ?: "Aviso Crítico de EzoCRM"
+        val settings = FcmNotificationPreferences.getSettings(applicationContext)
+        val routed = FcmPayloadRouter.classifyAndCheck(
+            data = remoteMessage.data,
+            fallbackTitle = remoteMessage.notification?.title,
+            fallbackBody = remoteMessage.notification?.body,
+            catalogEnabled = settings.notifyCatalogUpdates,
+            assignedContactsEnabled = settings.notifyAssignedContacts
+        )
 
-        val body = data["body"] 
-            ?: remoteMessage.notification?.body 
-            ?: "Se ha emitido una alerta operativa desde el panel de superusuario."
-
-        val severityStr = data["severity"] ?: "CRITICAL"
-        val severity = try {
-            AlertSeverity.valueOf(severityStr.uppercase())
-        } catch (e: Exception) {
-            AlertSeverity.CRITICAL
+        if (routed == null) {
+            Log.i(TAG, "Notificación FCM silenciada por preferencias del vendedor.")
+            return
         }
 
-        val requirePause = data["require_pause"]?.toBoolean() ?: (severity == AlertSeverity.CRITICAL)
-        val sender = data["sender"] ?: "Superusuario"
-        val alertId = data["id"] ?: UUID.randomUUID().toString()
+        val persistentBanner = FcmPayloadRouter.toBannerNotification(routed)
+        FcmNotificationPreferences.savePersistentFcmBanner(applicationContext, persistentBanner)
 
-        val alert = CriticalCrmAlert(
-            id = alertId,
-            title = title,
-            body = body,
-            severity = severity,
-            requireAutomationPause = requirePause,
-            timestamp = System.currentTimeMillis(),
-            senderAdmin = sender
-        )
-
-        // Registrar en el log de diagnóstico desatendido
-        UnattendedAutomationLogger.logEventSync(
-            context = applicationContext,
-            tag = "FCM-BROADCAST",
-            recipient = "LOCAL_DEVICE",
-            status = "PUSH_RECIBIDA: [${alert.severity}] ${alert.title}",
-            exitedChatSuccessfully = true,
-            details = "Requiere pausa: $requirePause | Emisor: $sender"
-        )
-
-        // Mostrar notificación Heads-Up de máxima prioridad
-        CriticalNotificationHelper.showNotification(applicationContext, alert)
+        when (routed) {
+            is FcmRoutedMessage.Critical -> {
+                val severity = try {
+                    AlertSeverity.valueOf(routed.severityName.uppercase())
+                } catch (_: Exception) {
+                    AlertSeverity.CRITICAL
+                }
+                val alert = CriticalCrmAlert(
+                    id = routed.id,
+                    title = routed.title,
+                    body = routed.body,
+                    severity = severity,
+                    requireAutomationPause = routed.requirePause,
+                    timestamp = System.currentTimeMillis(),
+                    senderAdmin = routed.sender
+                )
+                UnattendedAutomationLogger.logEventSync(
+                    context = applicationContext,
+                    tag = "FCM-BROADCAST",
+                    recipient = "LOCAL_DEVICE",
+                    status = "PUSH_RECIBIDA: [${alert.severity}] ${alert.title}",
+                    exitedChatSuccessfully = true,
+                    details = "Requiere pausa: ${routed.requirePause} | Emisor: ${routed.sender}"
+                )
+                CriticalNotificationHelper.showNotification(applicationContext, alert)
+            }
+            is FcmRoutedMessage.Personalized -> {
+                NotificationHelper(applicationContext).showFcmPersonalizedNotification(
+                    notifId = routed.id,
+                    title = routed.title,
+                    body = routed.body,
+                    type = routed.type,
+                    priority = routed.priority,
+                    senderName = routed.sender,
+                    actionUrl = routed.actionUrl
+                )
+            }
+        }
     }
 
     companion object {
         private const val TAG = "EzoFirebaseMessaging"
 
-        fun subscribeToCriticalAlertsTopic() {
-            try {
-                FirebaseMessaging.getInstance().subscribeToTopic(CriticalCrmAlert.TOPIC_CRITICAL_ALERTS)
-                    .addOnCompleteListener { task ->
-                        if (task.isSuccessful) {
-                            Log.i(TAG, "Suscrito activamente a ${CriticalCrmAlert.TOPIC_CRITICAL_ALERTS}")
-                        }
-                    }
-            } catch (e: Exception) {
-                Log.w(TAG, "No fue posible suscribir al topic: ${e.message}")
+        fun subscribeToCriticalAlertsTopic(context: android.content.Context? = null) {
+            if (context != null) {
+                FcmNotificationPreferences.syncTopicSubscriptions(context)
+            } else {
+                runCatching {
+                    com.google.firebase.messaging.FirebaseMessaging.getInstance()
+                        .subscribeToTopic(CriticalCrmAlert.TOPIC_CRITICAL_ALERTS)
+                }
             }
         }
     }

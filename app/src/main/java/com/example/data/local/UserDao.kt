@@ -70,4 +70,13 @@ interface UserDao {
 
     @Query("UPDATE users SET tutorialCompleted = :completed WHERE id = :userId")
     suspend fun setTutorialCompleted(userId: String, completed: Boolean)
+
+    @Query("UPDATE users SET fcmToken = :token, fcmUpdatedAtMs = :updatedAtMs, notifyCatalogUpdates = :notifyCatalog, notifyAssignedContacts = :notifyContacts WHERE LOWER(email) = LOWER(:email)")
+    suspend fun updateFcmSettingsByEmail(
+        email: String,
+        token: String,
+        updatedAtMs: Long,
+        notifyCatalog: Boolean,
+        notifyContacts: Boolean
+    )
 }

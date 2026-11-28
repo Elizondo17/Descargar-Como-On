@@ -91,6 +91,7 @@ fun DashboardScreen(
     val visibleSubordinateStats by viewModel.visibleSubordinateStats.collectAsState()
     val visibleHierarchyUsers by viewModel.visibleHierarchyUsers.collectAsState()
     val local7DayBuckets by viewModel.local7DayBuckets.collectAsState()
+    val localHourlyEffectivenessBuckets by viewModel.localHourlyEffectivenessBuckets.collectAsState()
     val pendingRequestsCount by viewModel.pendingHierarchyRequestsCount.collectAsState()
     val hasSeenSetupGuide by viewModel.hasSeenSetupGuide.collectAsState()
     val isLargeFont = com.example.ui.theme.LocalIsLargeFontMode.current
@@ -510,7 +511,8 @@ fun DashboardScreen(
                 onRefreshBoard = { viewModel.refreshSellerPerformanceBoard() },
                 onInspectSeller = if (canViewHierarchy) { sellerStats ->
                     onNavigateToHierarchy(sellerStats.sellerEmail)
-                } else null
+                } else null,
+                hourlyBuckets = localHourlyEffectivenessBuckets
             )
         }
 

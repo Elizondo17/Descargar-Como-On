@@ -70,7 +70,8 @@ service cloud.firestore {
                'updateRequired', 'requiredVersionCode', 'updateLockReason',
                'accessToken', 'parentEmail', 'supervisorChainEmails',
                'hierarchyDepth', 'approvalStatus', 'canManageSubUsers',
-               'visibilityDepth', 'requestedByEmail', 'tutorialCompleted'
+               'visibilityDepth', 'requestedByEmail', 'tutorialCompleted',
+               'fcmToken', 'fcmUpdatedAtMs', 'notifyCatalogUpdates', 'notifyAssignedContacts'
              ]) &&
              data.id is string && data.id.size() >= 3 && data.id.size() <= 80 &&
              data.email is string && data.email == emailKey &&
@@ -105,7 +106,11 @@ service cloud.firestore {
              (!('canManageSubUsers' in data) || data.canManageSubUsers is bool) &&
              (!('visibilityDepth' in data) || (data.visibilityDepth is int && data.visibilityDepth >= 0 && data.visibilityDepth <= 10)) &&
              (!('requestedByEmail' in data) || (data.requestedByEmail is string && data.requestedByEmail.size() <= 120)) &&
-             (!('tutorialCompleted' in data) || data.tutorialCompleted is bool);
+             (!('tutorialCompleted' in data) || data.tutorialCompleted is bool) &&
+             (!('fcmToken' in data) || (data.fcmToken is string && data.fcmToken.size() <= 512)) &&
+             (!('fcmUpdatedAtMs' in data) || (data.fcmUpdatedAtMs is int && data.fcmUpdatedAtMs >= 0)) &&
+             (!('notifyCatalogUpdates' in data) || data.notifyCatalogUpdates is bool) &&
+             (!('notifyAssignedContacts' in data) || data.notifyAssignedContacts is bool);
     }
 
     function isValidTeamConfig(data, configId) {
@@ -182,6 +187,19 @@ service cloud.firestore {
                             resource.data.isBlocked == false &&
                             (!('approvalStatus' in resource.data) || resource.data.approvalStatus == 'ACTIVE') &&
                             resource.data.expiresAt > request.time))) ||
+                         (request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['fcmToken', 'fcmUpdatedAtMs', 'notifyCatalogUpdates', 'notifyAssignedContacts', 'updatedAt']) &&
+                          (!('fcmToken' in request.resource.data) || (request.resource.data.fcmToken is string && request.resource.data.fcmToken.size() <= 512)) &&
+                          (!('fcmUpdatedAtMs' in request.resource.data) || (request.resource.data.fcmUpdatedAtMs is int && request.resource.data.fcmUpdatedAtMs >= 0)) &&
+                          (!('notifyCatalogUpdates' in request.resource.data) || request.resource.data.notifyCatalogUpdates is bool) &&
+                          (!('notifyAssignedContacts' in request.resource.data) || request.resource.data.notifyAssignedContacts is bool) &&
+                          request.resource.data.updatedAt is timestamp &&
+                          request.resource.data.updatedAt <= request.time &&
+                          (isSuperuser() ||
+                           (emailKey == authEmail() &&
+                            resource.data.isBlocked == false &&
+                            (!('approvalStatus' in resource.data) || resource.data.approvalStatus == 'ACTIVE') &&
+                            resource.data.expiresAt > request.time))) ||
                          (
                            (
                              isSuperuser() ||
@@ -193,7 +211,8 @@ service cloud.firestore {
                                 .hasOnly([
                                   'boundDeviceIds', 'boundDeviceLabels', 'ownerUid',
                                   'updatedAt', 'lastTamperAlertAtMs',
-                                  'updateRequired', 'updateLockReason', 'tutorialCompleted'
+                                  'updateRequired', 'updateLockReason', 'tutorialCompleted',
+                                  'fcmToken', 'fcmUpdatedAtMs', 'notifyCatalogUpdates', 'notifyAssignedContacts'
                                 ]) &&
                               (!('updateRequired' in request.resource.data.diff(resource.data).affectedKeys()) ||
                                 request.resource.data.updateRequired == false) &&
@@ -327,6 +346,37 @@ service cloud.firestore {
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isValidBusinessInvite(data, ownerUid, inviteId) {
+      return data.keys().hasAll([
+               'id', 'ownerUid', 'sellerEmail', 'name', 'phone', 'email',
+               'notes', 'status', 'presentationDate', 'presentationTime',
+               'reminderEnabled', 'reminderAtMs', 'whatsappSentCount',
+               'linkedRequestId', 'createdAtMs', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'ownerUid', 'sellerEmail', 'name', 'phone', 'email',
+               'notes', 'status', 'presentationDate', 'presentationTime',
+               'reminderEnabled', 'reminderAtMs', 'whatsappSentCount',
+               'linkedRequestId', 'createdAtMs', 'updatedAt'
+             ]) &&
+             data.id is string && data.id == inviteId && data.id.size() >= 1 && data.id.size() <= 80 &&
+             data.ownerUid is string && data.ownerUid == ownerUid &&
+             data.sellerEmail is string && data.sellerEmail.size() <= 120 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             data.phone is string && data.phone.size() <= 40 &&
+             data.email is string && data.email.size() <= 120 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.status in ['INVITED', 'CONFIRMED', 'ATTENDED', 'JOINED_TEAM', 'NOT_INTERESTED'] &&
+             data.presentationDate is string && data.presentationDate.size() <= 20 &&
+             data.presentationTime is string && data.presentationTime.size() <= 16 &&
+             data.reminderEnabled is bool &&
+             data.reminderAtMs is int && data.reminderAtMs >= 0 &&
+             data.whatsappSentCount is int && data.whatsappSentCount >= 0 && data.whatsappSentCount <= 10000 &&
+             data.linkedRequestId is string && data.linkedRequestId.size() <= 80 &&
+             data.createdAtMs is int && data.createdAtMs >= 0 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     function isValidSellerStats(data, ownerUid) {
       return data.keys().hasAll([
                'ownerUid', 'sellerName', 'sellerEmail', 'totalContacts', 'totalVisits',
@@ -400,6 +450,16 @@ service cloud.firestore {
         allow create: if isOwner(ownerUid) && isValidPostSaleRecord(request.resource.data, ownerUid, recordId);
         allow update: if isOwner(ownerUid) &&
                          isValidPostSaleRecord(request.resource.data, ownerUid, recordId) &&
+                         request.resource.data.ownerUid == resource.data.ownerUid &&
+                         request.resource.data.id == resource.data.id;
+        allow delete: if isOwner(ownerUid);
+      }
+
+      match /business_invites/{inviteId} {
+        allow get, list: if isOwner(ownerUid);
+        allow create: if isOwner(ownerUid) && isValidBusinessInvite(request.resource.data, ownerUid, inviteId);
+        allow update: if isOwner(ownerUid) &&
+                         isValidBusinessInvite(request.resource.data, ownerUid, inviteId) &&
                          request.resource.data.ownerUid == resource.data.ownerUid &&
                          request.resource.data.id == resource.data.id;
         allow delete: if isOwner(ownerUid);
@@ -659,8 +719,12 @@ service cloud.firestore {
                        request.resource.data.requestedByUid == request.auth.uid &&
                        request.resource.data.requestedByEmail == authEmail() &&
                        request.resource.data.resolvedByEmail == '' &&
-                       isAuthorizedSubManager() &&
-                       (isSuperuser() || request.resource.data.requestedParentEmail == authEmail());
+                       (
+                         isSuperuser() ||
+                         (request.resource.data.requestedParentEmail == authEmail() &&
+                          ((request.resource.data.requestType == 'NEW_SUB_USER' && isActiveAuthorizedMember()) ||
+                           (request.resource.data.requestType == 'LINK_EXISTING_USER' && isAuthorizedSubManager())))
+                       );
 
       allow update: if isValidHierarchyRequestId(requestId) &&
                        isSuperuser() &&
@@ -699,7 +763,7 @@ service cloud.firestore {
                'actionUrl', 'requiredVersionCode', 'createdAtMs', 'createdAt'
              ]) &&
              data.id is string && data.id == notifId &&
-             data.type in ['APP_UPDATE', 'SUPERUSER_GLOBAL', 'SUPERUSER_DIRECT', 'LEADER_COACHING'] &&
+             data.type in ['APP_UPDATE', 'SUPERUSER_GLOBAL', 'SUPERUSER_DIRECT', 'LEADER_COACHING', 'CATALOG_UPDATE', 'ASSIGNED_CONTACT'] &&
              data.priority in ['INFO', 'IMPORTANT', 'URGENT'] &&
              data.targetMode in ['ALL', 'USER'] &&
              data.targetEmail is string && data.targetEmail.size() <= 120 &&
@@ -813,6 +877,82 @@ service cloud.firestore {
                        );
 
       allow delete: if isValidMensajeId(mensajeId) && isSuperuser();
+    }
+
+    function isValidFcmDispatchId(dispatchId) {
+      return dispatchId is string &&
+             dispatchId.size() >= 3 &&
+             dispatchId.size() <= 80 &&
+             dispatchId.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidFcmDispatch(data, dispatchId) {
+      return data.keys().hasAll([
+               'id', 'category', 'targetMode', 'targetTopic', 'targetToken',
+               'targetEmail', 'title', 'body', 'priority', 'senderEmail',
+               'senderName', 'senderUid', 'status', 'createdAtMs', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'category', 'targetMode', 'targetTopic', 'targetToken',
+               'targetEmail', 'title', 'body', 'priority', 'actionUrl',
+               'senderEmail', 'senderName', 'senderUid', 'status',
+               'createdAtMs', 'createdAt', 'updatedAt'
+             ]) &&
+             data.id is string && data.id == dispatchId &&
+             data.category in ['CATALOG_UPDATE', 'ASSIGNED_CONTACT', 'SUPERUSER_GLOBAL', 'SUPERUSER_DIRECT', 'LEADER_COACHING', 'APP_UPDATE'] &&
+             data.targetMode in ['TOPIC', 'TOKEN'] &&
+             data.targetTopic is string && data.targetTopic.size() <= 80 &&
+             data.targetToken is string && data.targetToken.size() <= 512 &&
+             data.targetEmail is string && data.targetEmail.size() <= 120 &&
+             ((data.targetMode == 'TOPIC' && data.targetTopic.size() >= 3 && data.targetToken == '') ||
+              (data.targetMode == 'TOKEN' && data.targetToken.size() >= 10 && data.targetTopic == '' && isValidEmailKey(data.targetEmail))) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.body is string && data.body.size() >= 1 && data.body.size() <= 1000 &&
+             data.priority in ['INFO', 'IMPORTANT', 'URGENT'] &&
+             (!('actionUrl' in data) || (data.actionUrl is string && data.actionUrl.size() <= 500)) &&
+             data.senderEmail is string && isValidEmailKey(data.senderEmail) &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+             data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+             data.status in ['QUEUED', 'SENT', 'FAILED'] &&
+             data.createdAtMs is int && data.createdAtMs >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /fcm_dispatch_queue/{dispatchId} {
+      allow get: if isValidFcmDispatchId(dispatchId) &&
+                    (
+                      isSuperuser() ||
+                      (isSignedIn() && (
+                        resource.data.senderEmail == authEmail() ||
+                        resource.data.targetEmail == authEmail()
+                      ))
+                    );
+
+      allow list: if isBootstrapAdmin() ||
+                     (isSignedIn() && (
+                       resource.data.senderEmail == authEmail() ||
+                       resource.data.targetEmail == authEmail()
+                     ));
+
+      allow create: if isValidFcmDispatchId(dispatchId) &&
+                       isValidFcmDispatch(request.resource.data, dispatchId) &&
+                       request.resource.data.status == 'QUEUED' &&
+                       request.resource.data.senderEmail == authEmail() &&
+                       request.resource.data.senderUid == request.auth.uid &&
+                       (
+                         isSuperuser() ||
+                         (
+                           request.resource.data.category == 'LEADER_COACHING' &&
+                           request.resource.data.targetEmail != '' &&
+                           isAuthorizedSubManager() &&
+                           exists(/databases/$(database)/documents/authorized_users/$(request.resource.data.targetEmail)) &&
+                           ('supervisorChainEmails' in get(/databases/$(database)/documents/authorized_users/$(request.resource.data.targetEmail)).data) &&
+                           (authEmail() in get(/databases/$(database)/documents/authorized_users/$(request.resource.data.targetEmail)).data.supervisorChainEmails)
+                         )
+                       );
+
+      allow update, delete: if isValidFcmDispatchId(dispatchId) && isSuperuser();
     }
   }
 }

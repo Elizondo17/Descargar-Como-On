@@ -77,6 +77,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.DeliveryStats
+import com.example.data.model.HourlyEffectivenessBucket
 import com.example.data.model.SellerActivityBucket
 import com.example.data.model.SellerPerformanceStats
 import com.example.ui.theme.AmberDelay
@@ -109,6 +110,12 @@ private enum class AnalyticsWindow {
     ALL_TIME
 }
 
+private enum class HourlyMetricFilter(val label: String, val tag: String) {
+    ALL("Todo", "all"),
+    MESSAGES("Mensajes", "messages"),
+    CALLS("Llamadas", "calls")
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DashboardAnalyticsChartsSection(
@@ -119,6 +126,7 @@ fun DashboardAnalyticsChartsSection(
     canViewSubordinates: Boolean,
     onRefreshBoard: () -> Unit,
     onInspectSeller: ((SellerPerformanceStats) -> Unit)? = null,
+    hourlyBuckets: List<HourlyEffectivenessBucket> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val cleanCurrentEmail = remember(currentUserEmail) { currentUserEmail.trim().lowercase() }
@@ -130,8 +138,10 @@ fun DashboardAnalyticsChartsSection(
         mutableStateOf(if (hasTeamRows) AnalyticsScope.TEAM_BY_SELLER else AnalyticsScope.MY_ACTIVITY)
     }
     var window by remember { mutableStateOf(AnalyticsWindow.LAST_7_DAYS) }
+    var hourlyFilter by remember { mutableStateOf(HourlyMetricFilter.ALL) }
     var selectedSellerIndex by remember { mutableIntStateOf(-1) }
     var selectedDayIndex by remember { mutableIntStateOf(-1) }
+    var selectedHourIndex by remember { mutableIntStateOf(-1) }
 
     val selfStats = remember(teamStats, cleanCurrentEmail, deliveryStats) {
         teamStats.firstOrNull {
@@ -427,6 +437,174 @@ fun DashboardAnalyticsChartsSection(
             )
         }
 
+        // Interactive Hourly Effectiveness Chart (08:00 - 21:00)
+        val normalizedHourly = remember(hourlyBuckets) {
+            if (hourlyBuckets.isNotEmpty()) hourlyBuckets else (8..21).map { HourlyEffectivenessBucket(hour = it) }
+        }
+        val bestHourBucket = remember(normalizedHourly, hourlyFilter) {
+            val nonEmpty = normalizedHourly.filter {
+                when (hourlyFilter) {
+                    HourlyMetricFilter.ALL -> it.totalEvents > 0
+                    HourlyMetricFilter.MESSAGES -> it.totalMessages > 0
+                    HourlyMetricFilter.CALLS -> it.totalCalls > 0
+                }
+            }
+            nonEmpty.maxByOrNull { bucket ->
+                when (hourlyFilter) {
+                    HourlyMetricFilter.ALL -> bucket.combinedEffectivenessRate * 100f + bucket.totalEffectiveEvents
+                    HourlyMetricFilter.MESSAGES -> bucket.messageSuccessRate * 100f + bucket.successMessages
+                    HourlyMetricFilter.CALLS -> bucket.callSuccessRate * 100f + bucket.connectedCalls
+                }
+            }
+        }
+        val selectedHour = normalizedHourly.getOrNull(selectedHourIndex)
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(SlateBackground.copy(alpha = 0.72f))
+                .border(1.dp, SlateCardBorder, RoundedCornerShape(14.dp))
+                .padding(12.dp)
+                .testTag("dashboard_hourly_effectiveness_card"),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Schedule,
+                            contentDescription = null,
+                            tint = PsaCyanGlow,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Efectividad Horaria",
+                            color = TextPrimary,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = if (bestHourBucket != null) {
+                            val pct = when (hourlyFilter) {
+                                HourlyMetricFilter.ALL -> bestHourBucket.combinedEffectivenessRate
+                                HourlyMetricFilter.MESSAGES -> bestHourBucket.messageSuccessRate
+                                HourlyMetricFilter.CALLS -> bestHourBucket.callSuccessRate
+                            }
+                            "Franja pico: ${bestHourBucket.hourLabel} (${"%.0f".format(pct)}% efectividad)"
+                        } else {
+                            "Mensajes y llamadas agrupados por hora (08:00 - 21:00)"
+                        },
+                        color = if (bestHourBucket != null) EmeraldSuccess else TextMuted,
+                        fontSize = 11.sp,
+                        fontWeight = if (bestHourBucket != null) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ChartLegendDot(color = EmeraldSuccess, label = "Efectivo")
+                    ChartLegendDot(color = RoseError, label = "Sin éxito")
+                }
+            }
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                HourlyMetricFilter.entries.forEach { filterOption ->
+                    FilterChip(
+                        selected = hourlyFilter == filterOption,
+                        onClick = {
+                            hourlyFilter = filterOption
+                            selectedHourIndex = -1
+                        },
+                        label = { Text(filterOption.label, fontSize = 11.5.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = PsaCyanPrimary,
+                            selectedLabelColor = Color.Black
+                        ),
+                        modifier = Modifier.testTag("hourly_filter_${filterOption.tag}")
+                    )
+                }
+            }
+
+            val hasHourlyActivity = remember(normalizedHourly, hourlyFilter) {
+                normalizedHourly.any {
+                    when (hourlyFilter) {
+                        HourlyMetricFilter.ALL -> it.totalEvents > 0
+                        HourlyMetricFilter.MESSAGES -> it.totalMessages > 0
+                        HourlyMetricFilter.CALLS -> it.totalCalls > 0
+                    }
+                }
+            }
+
+            if (!hasHourlyActivity) {
+                AnalyticsEmptyChartNotice(
+                    message = "Aún no hay mensajes automatizados ni llamadas registradas por hora."
+                )
+            } else {
+                HourlyEffectivenessCanvas(
+                    buckets = normalizedHourly,
+                    filter = hourlyFilter,
+                    selectedHourIndex = selectedHourIndex,
+                    bestHour = bestHourBucket?.hour ?: -1,
+                    onSelectHour = { idx ->
+                        selectedHourIndex = if (selectedHourIndex == idx) -1 else idx
+                    }
+                )
+            }
+
+            AnimatedVisibility(visible = selectedHour != null) {
+                selectedHour?.let { bucket ->
+                    Surface(
+                        color = SlateCard,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, PsaCyanPrimary.copy(alpha = 0.45f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("hourly_tooltip_card")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "⏰ Franja ${bucket.hourLabel} – ${String.format(Locale.ROOT, "%02d:59", bucket.hour)}",
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.5.sp
+                                )
+                                Text(
+                                    text = "${"%.0f".format(bucket.combinedEffectivenessRate)}% efectividad",
+                                    color = EmeraldSuccess,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.5.sp
+                                )
+                            }
+                            Text(
+                                text = "💬 Mensajes: ${bucket.successMessages}/${bucket.totalMessages} ok (${"%.0f".format(bucket.messageSuccessRate)}%)  •  📞 Llamadas: ${bucket.connectedCalls}/${bucket.totalCalls} conect.",
+                                color = TextSecondary,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // Interactive Per-Seller Stacked Bar Chart (Exitosos vs Fallos)
         Column(
             modifier = Modifier
@@ -444,13 +622,13 @@ fun DashboardAnalyticsChartsSection(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Éxito vs. Fallos por Vendedor",
+                        text = "Mensajes Automatizados por Vendedor",
                         color = TextPrimary,
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Toca una barra para ver llamadas y coaching",
+                        text = "Éxito vs. fallos y llamadas • Toca una barra para ver detalle",
                         color = TextMuted,
                         fontSize = 11.sp
                     )
@@ -1002,6 +1180,188 @@ private fun WeeklyActivityTrendCanvas(
         callLinePoints.forEach { pt ->
             drawCircle(color = SlateBackground, radius = 4.dp.toPx(), center = pt)
             drawCircle(color = PsaCyanGlow, radius = 2.6.dp.toPx(), center = pt)
+        }
+    }
+}
+
+@Composable
+private fun HourlyEffectivenessCanvas(
+    buckets: List<HourlyEffectivenessBucket>,
+    filter: HourlyMetricFilter,
+    selectedHourIndex: Int,
+    bestHour: Int,
+    onSelectHour: (Int) -> Unit
+) {
+    val density = LocalDensity.current
+    val maxCount = remember(buckets, filter) {
+        max(
+            1,
+            buckets.maxOfOrNull { bucket ->
+                when (filter) {
+                    HourlyMetricFilter.ALL -> bucket.totalEvents
+                    HourlyMetricFilter.MESSAGES -> bucket.totalMessages
+                    HourlyMetricFilter.CALLS -> bucket.totalCalls
+                }
+            } ?: 1
+        )
+    }
+
+    val labelPaint = remember(density) {
+        Paint().apply {
+            isAntiAlias = true
+            color = TextSecondary.toArgb()
+            textSize = with(density) { 9.5.sp.toPx() }
+            textAlign = Paint.Align.CENTER
+        }
+    }
+    val axisPaint = remember(density) {
+        Paint().apply {
+            isAntiAlias = true
+            color = TextMuted.toArgb()
+            textSize = with(density) { 9.sp.toPx() }
+            textAlign = Paint.Align.RIGHT
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val slotMinWidth = 34.dp
+        val computedWidth = (slotMinWidth * buckets.size.coerceAtLeast(1)).coerceAtLeast(maxWidth - 8.dp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .width(computedWidth)
+                    .height(160.dp)
+                    .pointerInput(buckets, filter) {
+                        detectTapGestures { offset ->
+                            val leftMargin = 28.dp.toPx()
+                            val usableW = (size.width - leftMargin - 8.dp.toPx()).coerceAtLeast(1f)
+                            val slotW = usableW / buckets.size.coerceAtLeast(1)
+                            val idx = ((offset.x - leftMargin) / slotW).toInt()
+                            if (idx in buckets.indices) {
+                                onSelectHour(idx)
+                            }
+                        }
+                    }
+                    .testTag("analytics_hourly_effectiveness_chart")
+            ) {
+                val leftMargin = 28.dp.toPx()
+                val topPad = 14.dp.toPx()
+                val bottomPad = 24.dp.toPx()
+                val chartH = (size.height - topPad - bottomPad).coerceAtLeast(10f)
+                val chartW = (size.width - leftMargin - 8.dp.toPx()).coerceAtLeast(10f)
+                val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f)
+
+                for (step in 0..2) {
+                    val f = step / 2f
+                    val y = topPad + chartH - (chartH * f)
+                    drawLine(
+                        color = SlateCardBorder.copy(alpha = 0.65f),
+                        start = Offset(leftMargin, y),
+                        end = Offset(size.width - 8.dp.toPx(), y),
+                        strokeWidth = 1.dp.toPx(),
+                        pathEffect = if (step > 0) dash else null
+                    )
+                    drawContext.canvas.nativeCanvas.drawText(
+                        "${(maxCount * f).roundToInt()}",
+                        leftMargin - 5.dp.toPx(),
+                        y + 3.dp.toPx(),
+                        axisPaint
+                    )
+                }
+
+                val slotW = chartW / buckets.size.coerceAtLeast(1)
+                val barW = (slotW * 0.56f).coerceIn(10.dp.toPx(), 22.dp.toPx())
+                val ratePoints = mutableListOf<Offset>()
+
+                buckets.forEachIndexed { idx, bucket ->
+                    val cx = leftMargin + (slotW * idx) + (slotW / 2f)
+                    val baseY = topPad + chartH
+                    val isSelected = idx == selectedHourIndex
+                    val isBest = bucket.hour == bestHour
+
+                    if (isSelected || isBest) {
+                        drawRoundRect(
+                            color = if (isSelected) PsaCyanPrimary.copy(alpha = 0.16f) else EmeraldSuccess.copy(alpha = 0.10f),
+                            topLeft = Offset(cx - slotW * 0.44f, topPad - 3.dp.toPx()),
+                            size = Size(slotW * 0.88f, chartH + 6.dp.toPx()),
+                            cornerRadius = CornerRadius(7.dp.toPx(), 7.dp.toPx())
+                        )
+                    }
+
+                    val (effective, failed, total, rate) = when (filter) {
+                        HourlyMetricFilter.ALL -> listOf(
+                            bucket.totalEffectiveEvents,
+                            (bucket.totalEvents - bucket.totalEffectiveEvents).coerceAtLeast(0),
+                            bucket.totalEvents,
+                            bucket.combinedEffectivenessRate.roundToInt()
+                        )
+                        HourlyMetricFilter.MESSAGES -> listOf(
+                            bucket.successMessages,
+                            bucket.failedMessages,
+                            bucket.totalMessages,
+                            bucket.messageSuccessRate.roundToInt()
+                        )
+                        HourlyMetricFilter.CALLS -> listOf(
+                            bucket.connectedCalls,
+                            (bucket.totalCalls - bucket.connectedCalls).coerceAtLeast(0),
+                            bucket.totalCalls,
+                            bucket.callSuccessRate.roundToInt()
+                        )
+                    }
+
+                    val okH = (effective.toFloat() / maxCount) * chartH
+                    val failH = (failed.toFloat() / maxCount) * chartH
+                    val barColor = if (filter == HourlyMetricFilter.CALLS) PsaCyanPrimary else EmeraldSuccess
+
+                    if (okH > 0f) {
+                        drawRoundRect(
+                            color = barColor,
+                            topLeft = Offset(cx - barW / 2f, baseY - okH),
+                            size = Size(barW, okH),
+                            cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+                        )
+                    }
+                    if (failH > 0f) {
+                        drawRoundRect(
+                            color = RoseError.copy(alpha = 0.85f),
+                            topLeft = Offset(cx - barW / 2f, baseY - okH - failH),
+                            size = Size(barW, failH),
+                            cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+                        )
+                    }
+                    if (total > 0) {
+                        val rateY = baseY - ((rate.coerceIn(0, 100) / 100f) * chartH)
+                        ratePoints.add(Offset(cx, rateY))
+                    }
+
+                    drawContext.canvas.nativeCanvas.drawText(
+                        bucket.shortHourLabel,
+                        cx,
+                        size.height - 6.dp.toPx(),
+                        labelPaint
+                    )
+                }
+
+                if (ratePoints.size >= 2) {
+                    val ratePath = Path().apply {
+                        moveTo(ratePoints.first().x, ratePoints.first().y)
+                        ratePoints.drop(1).forEach { lineTo(it.x, it.y) }
+                    }
+                    drawPath(
+                        path = ratePath,
+                        color = AmberDelay,
+                        style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+                ratePoints.forEach { pt ->
+                    drawCircle(color = SlateBackground, radius = 3.6.dp.toPx(), center = pt)
+                    drawCircle(color = AmberDelay, radius = 2.2.dp.toPx(), center = pt)
+                }
+            }
         }
     }
 }

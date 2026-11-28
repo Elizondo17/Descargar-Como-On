@@ -627,7 +627,8 @@ data class ScheduleIntervalConfig(
 enum class AgendaSyncEntityType {
     VISIT,
     POST_SALE,
-    CONTACT
+    CONTACT,
+    BUSINESS_INVITE
 }
 
 enum class AgendaSyncOperation {
@@ -678,3 +679,70 @@ data class ReadNotificationEntity(
     val notifId: String,
     val readAtMs: Long = System.currentTimeMillis()
 )
+
+enum class BusinessInviteStatus(val label: String) {
+    INVITED("Invitado"),
+    CONFIRMED("Confirmado"),
+    ATTENDED("Asistió"),
+    JOINED_TEAM("Ingresó al equipo"),
+    NOT_INTERESTED("No interesado");
+
+    companion object {
+        fun fromRaw(raw: String): BusinessInviteStatus =
+            entries.firstOrNull { it.name == raw } ?: INVITED
+    }
+}
+
+@Entity(tableName = "business_invites")
+data class BusinessInviteEntity(
+    @PrimaryKey
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val ownerUid: String = "",
+    val sellerEmail: String = "",
+    val name: String,
+    val phone: String,
+    val email: String = "",
+    val notes: String = "",
+    val status: String = BusinessInviteStatus.INVITED.name,
+    val presentationDate: String = "",
+    val presentationTime: String = "",
+    val reminderEnabled: Boolean = false,
+    val reminderAtMs: Long = 0L,
+    val whatsappSentCount: Int = 0,
+    val linkedRequestId: String = "",
+    val createdAtMs: Long = System.currentTimeMillis(),
+    val updatedAtMs: Long = System.currentTimeMillis()
+) {
+    val parsedStatus: BusinessInviteStatus
+        get() = BusinessInviteStatus.fromRaw(status)
+}
+
+data class HourlyEffectivenessBucket(
+    val hour: Int,
+    val totalMessages: Int = 0,
+    val successMessages: Int = 0,
+    val failedMessages: Int = 0,
+    val totalCalls: Int = 0,
+    val connectedCalls: Int = 0
+) {
+    val hourLabel: String
+        get() = String.format(java.util.Locale.ROOT, "%02d:00", hour)
+
+    val shortHourLabel: String
+        get() = String.format(java.util.Locale.ROOT, "%02dh", hour)
+
+    val totalEvents: Int
+        get() = totalMessages + totalCalls
+
+    val totalEffectiveEvents: Int
+        get() = successMessages + connectedCalls
+
+    val messageSuccessRate: Float
+        get() = if (totalMessages > 0) (successMessages * 100f / totalMessages) else 0f
+
+    val callSuccessRate: Float
+        get() = if (totalCalls > 0) (connectedCalls * 100f / totalCalls) else 0f
+
+    val combinedEffectivenessRate: Float
+        get() = if (totalEvents > 0) (totalEffectiveEvents * 100f / totalEvents) else 0f
+}

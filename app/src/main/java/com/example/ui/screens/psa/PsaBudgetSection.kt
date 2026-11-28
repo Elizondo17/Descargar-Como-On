@@ -126,7 +126,7 @@ data class PurifierOption(
 @Composable
 fun PsaBudgetTabContent(
     context: Context,
-    viewModel: MainViewModel,
+    viewModel: MainViewModel? = null,
     pricingConfig: PsaPricingConfig,
     activeCountry: PsaCountryConfig = PsaCountryRegistry.defaultCountry(),
     initialHandoff: DemoToBudgetHandoff? = null,
@@ -135,7 +135,8 @@ fun PsaBudgetTabContent(
     onOpenAiAssistant: (() -> Unit)? = null,
     onAiContextChanged: ((PsaDemoAiContext) -> Unit)? = null
 ) {
-    val financingConfig by viewModel.psaFinancingConfig.collectAsState()
+    val financingConfig = viewModel?.psaFinancingConfig?.collectAsState()?.value
+        ?: com.example.data.repository.PsaFinancingConfig()
     val isLargeFont = LocalIsLargeFontMode.current
     val currencyFormat = remember(activeCountry.code) {
         PsaCountryRegistry.currencyNumberFormat(activeCountry)
@@ -160,7 +161,7 @@ fun PsaBudgetTabContent(
     var installmentsCount by remember { mutableIntStateOf(6) } // 1, 3, 6, 12, 18
     var customMonthsInput by remember { mutableStateOf("") }
     var customInterestPercentText by remember { mutableStateOf("") }
-    var cashDiscountPercentText by remember { mutableStateOf("10") }
+    var cashDiscountPercentText by remember { mutableStateOf("0") }
     var showPrivateProfit by remember { mutableStateOf(false) }
     var weeklyBidonesInput by remember { mutableIntStateOf(2) }
     var activeHandoffBannerMode by remember { mutableStateOf<DemoBudgetPaymentMode?>(null) }
@@ -287,7 +288,8 @@ fun PsaBudgetTabContent(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .testTag("psa_budget_lazy_list"),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // --- Header Title Card ---
@@ -413,8 +415,10 @@ fun PsaBudgetTabContent(
                         Text(
                             text = if (isCard) {
                                 "Las cuotas sin interés dependen del banco emisor y la tarjeta del cliente. Ajusta aquí el plan de cuotas y el recargo financiero aplicable."
+                            } else if (cashDiscountPercent > 0) {
+                                "Contado efectivo con ${cashDiscountPercent.toInt()}% OFF aplicado: ${currencyFormat.format(cashTotalWithDiscount)} (o personaliza adelanto y cuotas abajo)."
                             } else {
-                                "Contado efectivo con ${cashDiscountPercent.toInt()}% OFF sugerido: ${currencyFormat.format(cashTotalWithDiscount)} (o personaliza adelanto y cuotas abajo)."
+                                "Contado efectivo (precio de lista): ${currencyFormat.format(cashTotalWithDiscount)} (aplica un descuento abajo solo si lo deseas)."
                             },
                             color = TextPrimary,
                             fontSize = 12.sp
@@ -976,7 +980,8 @@ fun PsaBudgetTabContent(
                             text = "Total: ${currencyFormat.format(cashTotalWithDiscount)}",
                             color = EmeraldSuccess,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            modifier = Modifier.testTag("budget_cash_total_value")
                         )
                     }
 
@@ -986,7 +991,9 @@ fun PsaBudgetTabContent(
                         label = { Text("Descuento contado (%)", fontSize = 10.sp) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("budget_cash_discount_input"),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = EmeraldSuccess,
                             unfocusedBorderColor = SlateCardBorder,
@@ -1005,7 +1012,9 @@ fun PsaBudgetTabContent(
                             val isSelected = cashDiscountPercent.toInt() == pct
                             OutlinedButton(
                                 onClick = { cashDiscountPercentText = pct.toString() },
-                                modifier = Modifier.heightIn(min = 44.dp),
+                                modifier = Modifier
+                                    .heightIn(min = 44.dp)
+                                    .testTag("budget_cash_discount_chip_$pct"),
                                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                                 shape = RoundedCornerShape(8.dp),
                                 border = BorderStroke(1.dp, if (isSelected) EmeraldSuccess else SlateCardBorder)

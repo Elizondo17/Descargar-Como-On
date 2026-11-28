@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -43,6 +44,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
@@ -87,8 +90,12 @@ fun GeneralSettingsAndHelpDialog(
     activeCountry: PsaCountryConfig,
     hasDismissedSetupGuide: Boolean,
     isAppDistributionSignedIn: Boolean = false,
+    notifyCatalogUpdates: Boolean = true,
+    notifyAssignedContacts: Boolean = true,
     onSelectFontLevel: (FontScaleLevel) -> Unit,
     onSelectCountry: (String) -> Unit,
+    onToggleCatalogNotifications: (Boolean) -> Unit = {},
+    onToggleAssignedContactsNotifications: (Boolean) -> Unit = {},
     onShowSetupGuideAgain: () -> Unit,
     onOpenNotificationSettings: () -> Unit,
     onCheckAppDistributionUpdates: () -> Unit = {},
@@ -383,6 +390,101 @@ fun GeneralSettingsAndHelpDialog(
                                         Text("Portal DIP Oficial", fontSize = 12.sp, color = EmeraldSuccess, fontWeight = FontWeight.SemiBold)
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // Notificaciones Push (FCM) - Canales separados
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = SlateBackground),
+                        border = BorderStroke(1.dp, PurpleNeon.copy(alpha = 0.45f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.NotificationsActive,
+                                    contentDescription = null,
+                                    tint = PurpleNeon,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Notificaciones Push (FCM)",
+                                    color = PurpleNeon,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.5.sp
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .clickable { onToggleCatalogNotifications(!notifyCatalogUpdates) },
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text(
+                                        text = "Actualizaciones de Catálogo",
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.5.sp
+                                    )
+                                    Text(
+                                        text = "Precios oficiales, cuotas y novedades PSA",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Switch(
+                                    checked = notifyCatalogUpdates,
+                                    onCheckedChange = onToggleCatalogNotifications,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.Black,
+                                        checkedTrackColor = PsaCyanGlow
+                                    ),
+                                    modifier = Modifier.testTag("settings_switch_fcm_catalog")
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .clickable { onToggleAssignedContactsNotifications(!notifyAssignedContacts) },
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text(
+                                        text = "Contactos Asignados",
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.5.sp
+                                    )
+                                    Text(
+                                        text = "Alertas si el Administrador asigna nuevos contactos",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Switch(
+                                    checked = notifyAssignedContacts,
+                                    onCheckedChange = onToggleAssignedContactsNotifications,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.Black,
+                                        checkedTrackColor = EmeraldSuccess
+                                    ),
+                                    modifier = Modifier.testTag("settings_switch_fcm_contacts")
+                                )
                             }
                         }
                     }
